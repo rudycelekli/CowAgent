@@ -21,6 +21,7 @@ from agent.tools.utils.diff import (
     strip_line_number_prefixes,
 )
 from agent.tools.utils.file_state import note_write, staleness_warning
+from agent.tools.utils.mcp_config_path import is_mcp_config_path
 from agent.tools.utils.memory_path import feeds_memory_index
 from agent.tools.utils.syntax_check import review as syntax_review
 
@@ -77,6 +78,9 @@ class Edit(BaseTool):
         
         # Resolve path
         absolute_path = self._resolve_path(path)
+
+        if is_mcp_config_path(absolute_path):
+            return ToolResult.fail("Error: editing auto-loaded mcp.json is not allowed")
 
         # Same guard the read tool applies. Editing is also a read: the success
         # result carries a diff whose context lines would expose the secrets.
@@ -223,7 +227,7 @@ class Edit(BaseTool):
             ):
                 try:
                     self.memory_manager.mark_dirty()
-                except Exception as e:
+                except Exception:
                     # Don't fail the edit if memory notification fails
                     pass
             

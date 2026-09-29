@@ -5,12 +5,12 @@ Creates or overwrites files, automatically creates parent directories
 
 import os
 from typing import Dict, Any
-from pathlib import Path
 
 from agent.tools.base_tool import BaseTool, ToolResult
 from agent.tools.utils.credentials import is_credential_path
 from agent.tools.utils.diff import looks_like_line_numbered_block
 from agent.tools.utils.file_state import note_write, staleness_warning
+from agent.tools.utils.mcp_config_path import is_mcp_config_path
 from agent.tools.utils.memory_path import feeds_memory_index
 from agent.tools.utils.syntax_check import review as syntax_review
 from common.utils import expand_path
@@ -133,6 +133,9 @@ class Write(BaseTool):
             absolute = os.path.abspath(os.path.join(self.cwd, path))
 
         real = os.path.realpath(absolute)
+
+        if is_mcp_config_path(absolute):
+            raise PermissionError("writing to auto-loaded mcp.json is not allowed")
 
         # Always block the credentials file, mirroring the bash tool's guard.
         # The suffix rule also covers non-home .cow/.env files; the shared guard
