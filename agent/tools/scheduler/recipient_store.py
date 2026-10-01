@@ -40,11 +40,12 @@ class RecipientStore:
 
     @staticmethod
     def _key(instance_id: str, receiver: str) -> str:
-        # ``:`` reads cleanly in the on-disk JSON. Both an instance_id and a
-        # receiver id can themselves carry a colon (feishu group ids do), so the
-        # key is only ever a joined form; downstream code uses the structured
-        # fields, never a split of this key.
-        return f"{instance_id}:{receiver}"
+        # Escape each component independently: a colon in either id must not
+        # collide with the separator. Escape percent signs first so literal
+        # escape sequences remain distinct; ordinary legacy keys stay readable.
+        def escape(value):
+            return value.replace("%", "%25").replace(":", "%3A")
+        return f"{escape(instance_id)}:{escape(receiver)}"
 
     def _load_unlocked(self) -> Dict[str, dict]:
         if not self.store_path.exists():
@@ -53,7 +54,26 @@ class RecipientStore:
             with self.store_path.open("r", encoding="utf-8") as handle:
                 value = json.load(handle)
             recipients = value.get("recipients", {})
-            return recipients if isinstance(recipients, dict) else {}
+            if not isinstance(recipients, dict):
+                return {}
+            # Existing stores used unescaped joined keys. Rebuild keys from
+            # their structured identities on read, preserving legacy entries
+            # without trusting an ambiguous key to identify a recipient.
+            result = {}
+            for stored_key, entry in recipients.items():
+                # Unknown historical entries must not prevent a known-valid
+                # lookup or disappear when another recipient is remembered.
+                if not isinstance(entry, dict):
+                    result[stored_key] = entry
+                    continue
+                instance_id = entry.get("instance_id") or entry.get("channel_type")
+                receiver = entry.get("receiver")
+                if not isinstance(instance_id, str) or not instance_id or not isinstance(receiver, str) or not receiver:
+                    result[stored_key] = entry
+                    continue
+                key = self._key(instance_id, receiver)
+                result[key] = entry
+            return result
         except (OSError, ValueError, TypeError):
             return {}
 
