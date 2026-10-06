@@ -163,10 +163,12 @@ class Vision(BaseTool):
         return True
 
     def execute(self, args: Dict[str, Any]) -> ToolResult:
-        image = args.get("image", "").strip()
+        image = args.get("image", "")
+        if image.strip().startswith(("http://", "https://")):
+            image = image.strip()
         question = args.get("question", "").strip()
 
-        if not image:
+        if not image.strip():
             return ToolResult.fail("Error: 'image' parameter is required")
         if not question:
             return ToolResult.fail("Error: 'question' parameter is required")

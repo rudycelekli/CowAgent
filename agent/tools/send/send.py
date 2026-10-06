@@ -49,16 +49,16 @@ class Send(BaseTool):
         :param args: Contains file path and optional message
         :return: File metadata for channel to send
         """
-        path = args.get("path", "").strip()
+        path = args.get("path", "")
         message = args.get("message", "")
         
-        if not path:
+        if not path.strip():
             return ToolResult.fail("Error: path parameter is required")
         
         # Pass through remote URLs directly (no local file check): the client
         # renders the link inline, so no download is needed.
-        if path.lower().startswith(("http://", "https://")):
-            return self._build_url_result(path, message)
+        if path.strip().lower().startswith(("http://", "https://")):
+            return self._build_url_result(path.strip(), message)
         
         # Resolve path
         absolute_path = self._resolve_path(path)
