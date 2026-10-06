@@ -293,7 +293,7 @@ class LinkAIBot(Bot, OpenAICompatibleBot):
 
     def _build_vision_msg(self, query: str, path: str):
         try:
-            suffix = utils.get_path_suffix(path)
+            suffix = os.path.splitext(path)[1].lstrip(".")
             with open(path, "rb") as file:
                 base64_str = base64.b64encode(file.read()).decode('utf-8')
                 messages = [{

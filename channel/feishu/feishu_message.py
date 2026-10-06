@@ -5,7 +5,7 @@ import json
 import os
 import requests
 from common.log import logger
-from common import state_dir, utils
+from common import state_dir
 from common.media_download import MAX_FILE_BYTES, MAX_IMAGE_BYTES, download_to_file
 
 
@@ -143,7 +143,7 @@ class FeishuMessage(ChatMessage):
             # 否则相对路径 ./tmp 在 agent 工作区里 read 时会找不到。
             tmp_dir = str(state_dir.tmp_dir())
             self.content = os.path.join(
-                tmp_dir, f"{safe_filename(file_key) or 'file'}.{utils.get_path_suffix(file_name)}"
+                tmp_dir, f"{safe_filename(file_key) or 'file'}.{os.path.splitext(file_name)[1].lstrip('.')}"
             )
 
             def _download_file():
