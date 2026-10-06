@@ -49,10 +49,10 @@ class Write(BaseTool):
         :param args: Contains file path and content
         :return: Operation result
         """
-        path = args.get("path", "").strip()
+        path = args.get("path", "")
         content = args.get("content", "")
         
-        if not path:
+        if not path.strip():
             return ToolResult.fail("Error: path parameter is required")
 
         # write replaces the whole file, so echoing read's numbered output here

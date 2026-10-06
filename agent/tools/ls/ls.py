@@ -45,7 +45,9 @@ class Ls(BaseTool):
         :param args: Listing parameters
         :return: Directory contents or error
         """
-        path = args.get("path", ".").strip()
+        path = args.get("path", ".")
+        if not path.strip():
+            path = ""
         limit = args.get("limit", DEFAULT_LIMIT)
         
         # Resolve path

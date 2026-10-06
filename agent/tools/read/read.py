@@ -139,12 +139,12 @@ class Read(BaseTool):
         """
         # Support 'location' as alias for 'path' (LLM may use it from skill listing)
         path = args.get("path", "") or args.get("location", "")
-        path = path.strip() if isinstance(path, str) else ""
+        path = path if isinstance(path, str) else ""
         offset = args.get("offset")
         limit = args.get("limit")
         pages = args.get("pages")
 
-        if not path:
+        if not path.strip():
             return ToolResult.fail("Error: path parameter is required")
         
         # Resolve path
