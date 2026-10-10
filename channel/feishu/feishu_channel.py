@@ -12,7 +12,6 @@
 """
 
 import json
-import hmac
 import logging
 import os
 import ssl
@@ -24,6 +23,7 @@ from urllib.parse import urlparse
 import requests
 import web
 
+from common.atomic_write import write_json_atomic
 from bridge.context import Context
 from bridge.context import ContextType
 from bridge.reply import Reply, ReplyType
@@ -43,6 +43,7 @@ from channel.feishu.feishu_scheduler_card import (
 from common import state_dir, utils
 from common.expired_dict import ExpiredDict
 from common.log import logger
+from common.media_download import MAX_FILE_BYTES, MAX_IMAGE_BYTES, download_bytes, download_to_file
 from common.singleton import singleton
 from config import conf
 
@@ -50,6 +51,10 @@ from config import conf
 logging.getLogger("Lark").setLevel(logging.WARNING)
 
 URL_VERIFICATION = "url_verification"
+
+# Total wall-clock budget for a remote video download; the socket timeout
+# alone does not stop a server that keeps trickling bytes.
+_MAX_REMOTE_VIDEO_SECONDS = 300
 
 # Lazy import of the lark_oapi SDK. The full `import lark_oapi` pulls in 10k+
 # files and takes 4-10s, so we defer the actual import to where it is needed.
@@ -148,7 +153,6 @@ def _persist_feishu_credentials(app_id: str, app_secret: str) -> bool:
             "config.json",
         )
         if os.path.exists(config_path):
-            # utf-8-sig tolerates a UTF-8 BOM (e.g. edited with Windows Notepad).
             with open(config_path, "r", encoding="utf-8-sig") as f:
                 file_cfg = json.load(f)
         else:
@@ -164,8 +168,7 @@ def _persist_feishu_credentials(app_id: str, app_secret: str) -> bool:
             existing.append("feishu")
             file_cfg["channel_type"] = ",".join(existing)
 
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(file_cfg, f, indent=4, ensure_ascii=False)
+        write_json_atomic(config_path, file_cfg)
 
         # 同步到内存中的 conf()，让本次启动直接生效
         conf()["feishu_app_id"] = app_id
@@ -682,14 +685,14 @@ class FeiShuChanel(ChatChannel):
             logger.warning(f"[FeiShu] invalid message recall event: {event}")
             return 0, False
 
-        session_id = self._message_sessions.get(message_id)
+        session_id, agent_id = self._message_sessions.get(message_id, (None, None))
         if not session_id:
             logger.info(
                 f"[FeiShu] ignored recall for unknown message, message_id={message_id}"
             )
             return 0, False
 
-        result = self.cancel_message(session_id, message_id)
+        result = self.cancel_message(session_id, message_id, agent_id=agent_id)
         self._message_sessions.pop(message_id, None)
         logger.info(
             "[FeiShu] recalled message cancelled, "
@@ -866,10 +869,10 @@ class FeiShuChanel(ChatChannel):
             # directly so it works on the very first message.
             from agent.team_addressing import stamp_speaker_from_channel
             stamp_speaker_from_channel(self, context, feishu_msg.content_with_quote())
-            # Feishu recall events only include message_id/chat_id. Keep the
-            # accepted route and use message_id as the agent cancellation key.
+            # Feishu recall events only include message_id/chat_id, and a recall
+            # has to find the queue the message went into -- which produce() keys
+            # by the Agent it routed to. Record both halves once the route is set.
             context["request_id"] = msg_id
-            self._message_sessions[msg_id] = context["session_id"]
             # 流式回复模式：向 context 注入 on_event 回调，agent 每产出一段文字时会调用它。
             # 回调内部先发送一条占位消息获取 message_id，之后通过 PATCH 接口原地更新内容，
             # 实现打字机效果。回调结束时设置 context["feishu_streamed"]=True，
@@ -879,6 +882,7 @@ class FeiShuChanel(ChatChannel):
             if self.cfg("feishu_stream_reply", True):
                 context["on_event"] = self._make_feishu_stream_callback(context, feishu_msg.access_token)
             self.produce(context)
+            self._message_sessions[msg_id] = (context["session_id"], context.get("agent_id"))
         logger.debug(f"[FeiShu] query={feishu_msg.content}, type={feishu_msg.ctype}")
 
     def send(self, reply: Reply, context: Context):
@@ -892,6 +896,10 @@ class FeiShuChanel(ChatChannel):
             access_token = msg.access_token
         else:
             access_token = self.fetch_access_token()
+        if not access_token:
+            # 拿不到 token 就不要再发一个注定 401 的请求了。
+            logger.error("[FeiShu] no access token available, skip sending reply")
+            return
         headers = {
             "Authorization": "Bearer " + access_token,
             "Content-Type": "application/json",
@@ -919,7 +927,7 @@ class FeiShuChanel(ChatChannel):
                 return
             msg_type = "image"
             content_key = "image_key"
-        elif reply.type == ReplyType.FILE:
+        elif reply.type in (ReplyType.FILE, ReplyType.VIDEO):
             # 如果有附加的文本内容，先发送文本
             if hasattr(reply, 'text_content') and reply.text_content:
                 logger.info(f"[FeiShu] Sending text before file: {reply.text_content[:50]}...")
@@ -933,7 +941,10 @@ class FeiShuChanel(ChatChannel):
             if file_path.startswith("file://"):
                 file_path = file_path[7:]
 
-            is_video = file_path.lower().endswith(('.mp4', '.avi', '.mov', '.wmv', '.flv'))
+            # ReplyType.VIDEO 已说明内容就是视频，不能只靠扩展名判断：
+            # 生成的临时文件名可能没有已知的视频后缀。
+            is_video = reply.type == ReplyType.VIDEO or file_path.lower().endswith(
+                ('.mp4', '.avi', '.mov', '.wmv', '.flv'))
 
             if is_video:
                 # 视频上传（包含duration信息）
@@ -1829,7 +1840,7 @@ class FeiShuChanel(ChatChannel):
             "app_secret": self.feishu_app_secret
         }
         data = bytes(json.dumps(req_body), encoding='utf8')
-        response = requests.post(url=url, data=data, headers=headers)
+        response = requests.post(url=url, data=data, headers=headers, timeout=(5, 10))
         if response.status_code == 200:
             res = response.json()
             if res.get("code") != 0:
@@ -1839,6 +1850,9 @@ class FeiShuChanel(ChatChannel):
                 return res.get("tenant_access_token")
         else:
             logger.error(f"[FeiShu] fetch token error, res={response}")
+            # 与上面的 code != 0 分支保持一致：失败也返回 str，不要让调用方
+            # 拿到 None 去拼 "Bearer " + token。
+            return ""
 
     def _upload_image_url(self, img_url, access_token):
         logger.debug(f"[FeiShu] start process image, img_url={img_url}")
@@ -1876,12 +1890,12 @@ class FeiShuChanel(ChatChannel):
         # build starts, and not necessarily writable there -- and that file was
         # only removed after a successful upload, so a failed upload left it
         # behind in the working directory.
-        response = requests.get(img_url, timeout=(5, 30))
-        if response.status_code != 200:
-            # Without this the staged file is never created and the `open` below
-            # raised FileNotFoundError, skipping the caller's
-            # `if not reply_content: logger.warning("upload image failed")` path.
-            logger.error(f"[FeiShu] download image failed, status={response.status_code}")
+        try:
+            image_bytes = download_bytes(img_url, MAX_IMAGE_BYTES, timeout=(5, 30), guarded=True)
+        except Exception as e:
+            # The caller relies on None here:
+            # `if not reply_content: logger.warning("upload image failed")`.
+            logger.error(f"[FeiShu] download image failed: {e}")
             return None
 
         suffix = utils.get_path_suffix(img_url)
@@ -1894,7 +1908,7 @@ class FeiShuChanel(ChatChannel):
         }
         upload_response = requests.post(
             upload_url,
-            files={"image": (f"image.{suffix or 'img'}", response.content)},
+            files={"image": (f"image.{suffix or 'img'}", image_bytes)},
             data=data,
             headers=headers,
             timeout=(5, 15),
@@ -1965,26 +1979,25 @@ class FeiShuChanel(ChatChannel):
                     logger.error(f"[FeiShu] local video file not found: {local_path}")
                     return None
             else:
-                # For HTTP URLs, download first
-                logger.info(f"[FeiShu] Downloading video from URL: {video_url}")
-                response = requests.get(video_url, timeout=(5, 60))
-                if response.status_code != 200:
-                    logger.error(f"[FeiShu] download video failed, status={response.status_code}")
-                    return None
-
-                # Stage under the Agent's managed tmp dir. A bare name lands in
-                # the process CWD, which a packaged desktop build does not
-                # control and may not be able to write to. The duration probe
-                # below needs a real file, so this one cannot upload from memory
-                # the way the image and file paths do.
+                # For HTTP URLs, download first. Route through the shared
+                # bounded helper so a huge or endless response is capped at
+                # MAX_FILE_BYTES (same contract as the image/file paths above).
+                # The file is staged under the Agent's managed tmp dir; a bare
+                # name lands in the process CWD, which a packaged desktop build
+                # does not control and may not be able to write to.
                 import uuid
                 file_name = os.path.basename(urlparse(video_url).path) or "video.mp4"
                 temp_file = str(state_dir.tmp_dir() / f"{uuid.uuid4()}_{file_name}")
-
-                with open(temp_file, "wb") as file:
-                    file.write(response.content)
-
-                logger.info(f"[FeiShu] Video downloaded, size={len(response.content)} bytes")
+                try:
+                    result = download_to_file(
+                        video_url, temp_file, MAX_FILE_BYTES, timeout=(5, 60),
+                        max_seconds=_MAX_REMOTE_VIDEO_SECONDS,
+                    )
+                except Exception as e:
+                    # The exception text can carry the full (possibly signed) URL.
+                    logger.error(f"[FeiShu] download video failed: {type(e).__name__}")
+                    return None
+                logger.info(f"[FeiShu] Video downloaded, size={result.size} bytes")
                 local_path = temp_file
 
             # Get video duration
@@ -2168,10 +2181,7 @@ class FeiShuChanel(ChatChannel):
         # `with open(...)` body, so the handle was still held when os.remove ran
         # — that raises on Windows, after the file had already been uploaded.
         try:
-            response = requests.get(file_url, timeout=(5, 30))
-            if response.status_code != 200:
-                logger.error(f"[FeiShu] download file failed, status={response.status_code}")
-                return None
+            file_bytes = download_bytes(file_url, MAX_FILE_BYTES, timeout=(5, 30))
 
             # Take the name off the URL path: a query string would otherwise end
             # up in the suffix and drop file_type to 'stream'.
@@ -2191,7 +2201,7 @@ class FeiShuChanel(ChatChannel):
 
             upload_response = requests.post(
                 upload_url,
-                files={"file": (file_name, response.content)},
+                files={"file": (file_name, file_bytes)},
                 data=data,
                 headers=headers,
                 timeout=(5, 30)
@@ -2319,7 +2329,7 @@ class FeishuController:
             if not (
                 isinstance(callback_token, str)
                 and expected_token
-                and hmac.compare_digest(callback_token, expected_token)
+                and utils.constant_time_equals(callback_token, expected_token)
             ):
                 return self.FAILED_MSG
 

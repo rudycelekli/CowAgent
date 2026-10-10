@@ -379,7 +379,7 @@ class ModelsHandler:
         # claude-sonnet-5 stays first here (unlike the chat lists): the first
         # entry is the auto-picked vision model, and image understanding does
         # not justify the Opus price.
-        "claudeAPI": [const.CLAUDE_SONNET_5, const.CLAUDE_OPUS_5, const.CLAUDE_FABLE_5_1, const.CLAUDE_FABLE_5, const.CLAUDE_4_8_OPUS, const.CLAUDE_4_7_OPUS, const.CLAUDE_4_6_SONNET, const.CLAUDE_4_6_OPUS],
+        "claudeAPI": [const.CLAUDE_SONNET_5, const.CLAUDE_OPUS_5_5, const.CLAUDE_OPUS_5, const.CLAUDE_FABLE_5_1, const.CLAUDE_FABLE_5, const.CLAUDE_4_8_OPUS, const.CLAUDE_4_7_OPUS, const.CLAUDE_4_6_SONNET, const.CLAUDE_4_6_OPUS],
         "gemini":    [const.GEMINI_38_FLASH, const.GEMINI_37_FLASH, const.GEMINI_36_FLASH, const.GEMINI_35_FLASH, const.GEMINI_31_FLASH_LITE_PRE, const.GEMINI_31_PRO_PRE, const.GEMINI_3_FLASH_PRE],
         "qianfan":   [const.ERNIE_45_TURBO_VL],
         # glm-5.3-flash is natively multimodal and dispatched as-is; the
@@ -1365,6 +1365,10 @@ class ModelsHandler:
         "MiniMax-Text-01": {"context_window": 1000000},
         "mimo-v2.5-pro": {"context_window": 1000000, "max_output_tokens": 131072},
         "mimo-v2.5": {"context_window": 1000000, "max_output_tokens": 131072},
+        "gpt-6.1-sol": {"context_window": 1000000, "max_output_tokens": 128000},
+        "gpt-6-luna": {"context_window": 1000000, "max_output_tokens": 128000},
+        "gpt-6-sol": {"context_window": 1000000, "max_output_tokens": 128000},
+        "gpt-6-astra": {"context_window": 1000000, "max_output_tokens": 128000},
         "gpt-5.6-luna": {"context_window": 1050000, "max_output_tokens": 128000},
         "gpt-5.6-terra": {"context_window": 1050000, "max_output_tokens": 128000},
         "gpt-5.6-sol": {"context_window": 1050000, "max_output_tokens": 128000},
@@ -1376,6 +1380,7 @@ class ModelsHandler:
         "gpt-4.1": {"context_window": 1047576, "max_output_tokens": 32768},
         "gpt-4.1-mini": {"context_window": 1047576, "max_output_tokens": 32768},
         "gpt-4o": {"context_window": 128000, "max_output_tokens": 16384},
+        "claude-opus-5-5": {"context_window": 1000000, "max_output_tokens": 128000},
         "claude-opus-5": {"context_window": 1000000, "max_output_tokens": 128000},
         "claude-sonnet-5": {"context_window": 1000000, "max_output_tokens": 128000},
         "claude-fable-5": {"context_window": 1000000, "max_output_tokens": 128000},
@@ -1953,6 +1958,20 @@ class ModelsHandler:
         applied = {}
         local_config = conf()
         file_cfg = self._read_file_config()
+
+        # The runtime prefers the custom provider's model over the global one.
+        if model and custom_provider:
+            custom_provider["model"] = model
+            # Environment providers may contain credentials absent from disk.
+            # Change only an already-persisted entry's selected model.
+            stored_providers = file_cfg.get("custom_providers")
+            if isinstance(stored_providers, list):
+                for stored_provider in stored_providers:
+                    if (
+                        isinstance(stored_provider, dict)
+                        and stored_provider.get("id") == custom_provider["id"]
+                    ):
+                        stored_provider["model"] = model
 
         # Fall back to the custom provider's default model when none is given.
         if not model and custom_provider:

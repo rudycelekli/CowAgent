@@ -16,9 +16,8 @@ import uuid
 import web
 
 from channel.web.core._common import (
-    _ensure_list,
     _get_workspace_root,
-    _raw_web_input,
+    _multipart_lists,
     _request_agent_id,
     _require_auth,
     _scoped_agent_id,
@@ -90,11 +89,15 @@ def _market_spec(source: str, value: str) -> str:
             raise ValueError(f"invalid skill name: {value}")
         return value
     if source == "clawhub":
+        from cli.commands.skill import SkillInstallError, parse_clawhub_ref
+
         if value.startswith("clawhub:"):
             value = value[len("clawhub:"):]
-        if not _SKILL_NAME_RE.match(value):
-            raise ValueError(f"invalid ClawHub skill name: {value}")
-        return f"clawhub:{value}"
+        try:
+            owner, slug = parse_clawhub_ref(value)
+        except SkillInstallError:
+            raise ValueError(f"invalid ClawHub skill: {value}")
+        return f"clawhub:{owner}/{slug}" if owner else f"clawhub:{slug}"
     if source == "github":
         if value.startswith(("https://", "http://")) or _GITHUB_SHORTHAND_RE.match(value):
             return value
@@ -389,29 +392,6 @@ class SkillsHandler:
         except Exception as e:
             logger.error(f"[WebChannel] Skills POST error: {e}")
             return json.dumps({"status": "error", "message": str(e)})
-
-
-def _multipart_lists(max_parts: int) -> dict:
-    """
-    The request's multipart form, every field as a list of all its values.
-
-    Newer web.py parses forms with the ``multipart`` package, keeps only the
-    last value of a repeated field, and inherits that package's 128-part cap.
-    A folder upload repeats ``files`` and ``paths`` once per file, so the body
-    is parsed here directly whenever that package is what web.py relies on.
-    """
-    multipart = getattr(getattr(web, "webapi", None), "multipart", None)
-    env = web.ctx.env
-    content_type = (env.get("CONTENT_TYPE") or "").lower()
-    if not hasattr(multipart, "parse_form_data") or not content_type.startswith("multipart/"):
-        return {key: _ensure_list(value) for key, value in _raw_web_input().items()}
-    forms, files = multipart.parse_form_data(
-        environ=env, ignore_errors=False, part_limit=max_parts,
-    )
-    return {
-        key: forms.getall(key) + files.getall(key)
-        for key in set(forms.keys()) | set(files.keys())
-    }
 
 
 class SkillUploadHandler:

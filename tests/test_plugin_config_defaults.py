@@ -7,6 +7,11 @@ carry them (``{}``, or one key of the two) raised ``KeyError`` in ``__init__``.
 disabling it and **persisting** ``enabled=false``, so the plugin then stayed off
 across restarts, even after the user put the file right again.
 
+The same outcome came from the other direction: ``load_config`` reading
+``plugin_config_path`` outside the ``if not plugin_conf`` block that assigns it,
+which took down every plugin that already had an entry in
+``plugins/config.json`` (see the last test).
+
 The tests point each plugin at a config under ``tmp_path`` rather than the one
 in the repo: ``__file__`` is what the plugin uses for its own directory, and
 ``Plugin.path`` is what ``load_config`` uses, so both are redirected.
@@ -109,6 +114,20 @@ def test_banwords_still_writes_the_default_when_the_file_is_missing(tmp_path, mo
     assert json.loads(config_path.read_text(encoding="utf-8")) == {"action": "ignore"}
 
 
+def test_a_plugin_with_a_global_entry_starts_without_reading_its_own_dir(tmp_path, monkeypatch):
+    """A plugin already configured in ``plugins/config.json`` must still start
+    (the own-dir lookup must not run, or ``load_config`` hits an unbound name)."""
+    module, banwords = _load("plugins.banwords.banwords", "./plugins/banwords", "BANWORDS")
+    config_path = _point_at(monkeypatch, module, banwords, tmp_path)
+    monkeypatch.setattr("plugins.plugin.pconf", lambda name: {"action": "replace"})
+
+    plugin = banwords()  # must not raise
+
+    assert plugin.action == "replace"
+    # The global entry wins: the plugin's own directory is never consulted.
+    assert not config_path.exists()
+
+
 def _reject_writes(monkeypatch):
     """Make every write-mode ``open`` fail, the way a read-only dir does.
 
@@ -151,3 +170,40 @@ def test_a_read_only_plugin_dir_does_not_take_the_plugin_down(
         assert plugin.password == ""
         assert plugin.admin_users == []
     assert config_path.read_text(encoding="utf-8") == "{}"
+
+
+def _fail_halfway(monkeypatch):
+    """Let a JSON write start, then fail the way a full disk does.
+
+    ``_reject_writes`` covers ``open`` failing outright; this covers the write
+    that begins and then dies, which is what leaves a half-written file.
+    """
+    def half_dump(obj, fp, **kwargs):
+        fp.write('{"half')
+        fp.flush()
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(json, "dump", half_dump)
+
+
+@pytest.mark.parametrize(
+    "module_name, plugin_dir, registry_name, existing",
+    [
+        ("plugins.banwords.banwords", "./plugins/banwords", "BANWORDS", '{"other": 1}'),
+        ("plugins.godcmd.godcmd", "./plugins/godcmd", "GODCMD", '{"password": "set-by-the-user"}'),
+    ],
+)
+def test_a_repair_that_fails_halfway_keeps_the_existing_file(
+    tmp_path, monkeypatch, module_name, plugin_dir, registry_name, existing
+):
+    module, plugin_cls = _load(module_name, plugin_dir, registry_name)
+    config_path = _point_at(monkeypatch, module, plugin_cls, tmp_path)
+    config_path.write_text(existing, encoding="utf-8")
+    _fail_halfway(monkeypatch)
+
+    plugin_cls()  # must not raise: the defaults held in memory are enough
+
+    # The repair is best-effort. A write that dies halfway must not turn an
+    # incomplete config into one the next start cannot parse -- that is what
+    # makes activate_plugins disable the plugin for good.
+    assert json.loads(config_path.read_text(encoding="utf-8")) == json.loads(existing)
