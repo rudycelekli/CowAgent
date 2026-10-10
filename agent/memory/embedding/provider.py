@@ -336,7 +336,11 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         for i in range(0, len(texts), step):
             chunk = texts[i:i + step]
             result = self._call_api(chunk)
-            out.extend(self._post_process(item["embedding"]) for item in result["data"])
+            items = result["data"]
+            # Some gateways answer out of order; `index` is the request position.
+            if all("index" in item for item in items):
+                items = sorted(items, key=lambda item: item["index"])
+            out.extend(self._post_process(item["embedding"]) for item in items)
         return out
 
     @property

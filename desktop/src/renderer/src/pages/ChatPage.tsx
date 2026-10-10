@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useCallback, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useCallback, useState } from 'react'
 import {
   ChevronUp,
   Loader2,
@@ -49,6 +49,30 @@ const SUGGESTIONS: {
   { key: 'example_web', send: '/help', icon: Terminal, iconClass: 'text-content-tertiary', bgClass: 'bg-content-tertiary/10' },
 ]
 
+const useProductSuggestions = product.chat?.useSuggestions ?? (() => null)
+
+function useSuggestionCards() {
+  const custom = useProductSuggestions()
+  if (custom) {
+    return custom.map((s, i) => {
+      const base = SUGGESTIONS[i % SUGGESTIONS.length]
+      return {
+        key: `custom-${i}`,
+        title: s.title,
+        text: s.text,
+        prompt: s.prompt || s.text,
+        icon: s.icon ?? base.icon,
+        iconClass: base.iconClass,
+        bgClass: base.bgClass,
+      }
+    })
+  }
+  return SUGGESTIONS.map(({ key, send, icon, iconClass, bgClass }) => {
+    const text = t(`${key}_text` as Parameters<typeof t>[0])
+    return { key, title: t(`${key}_title` as Parameters<typeof t>[0]), text, prompt: send ?? text, icon, iconClass, bgClass }
+  })
+}
+
 const ChatPage: React.FC<ChatPageProps> = ({ baseUrl }) => {
   const activeId = useSessionStore((s) => s.activeId)
   const loadSessions = useSessionStore((s) => s.loadSessions)
@@ -64,6 +88,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ baseUrl }) => {
   const ensureSession = useChatStore((s) => s.ensureSession)
   const clearContext = useChatStore((s) => s.clearContext)
   const wsOnSessionSwitch = useWorkspaceStore((s) => s.onSessionSwitch)
+  const suggestions = useSuggestionCards()
 
   const messages = session?.messages ?? []
   const isStreaming = session?.isStreaming ?? false
@@ -218,7 +243,12 @@ const ChatPage: React.FC<ChatPageProps> = ({ baseUrl }) => {
       // After the first message, refresh the list and ask backend to title it.
       if (isFirst) {
         try {
-          await apiClient.generateSessionTitle(sid, text, undefined, owner)
+          const res = await apiClient.generateSessionTitle(sid, text, undefined, owner)
+          if (res.status === 'success' && res.title) {
+            useSessionStore.setState((s) => ({
+              sessions: s.sessions.map((x) => (x.session_id === sid ? { ...x, title: res.title } : x)),
+            }))
+          }
         } catch {
           /* ignore */
         }
@@ -294,6 +324,14 @@ const ChatPage: React.FC<ChatPageProps> = ({ baseUrl }) => {
   // the length unchanged, so the navigator keys on the persisted seqs too.
   const persistedUserSeqs = messages.filter((m) => m.role === 'user' && m.userSeq != null).length
   const timelineRevision = `${messages.length}:${persistedUserSeqs}`
+  // Each message's turn: the seq of the question that opened it.
+  const turnSeqs = useMemo(() => {
+    let turn: number | null = null
+    return messages.map((m) => {
+      if (m.role === 'user') turn = m.userSeq ?? null
+      return turn
+    })
+  }, [messages])
 
   return (
     <div className="flex flex-col flex-1 min-h-0 relative">
@@ -321,37 +359,34 @@ const ChatPage: React.FC<ChatPageProps> = ({ baseUrl }) => {
               {t('welcome_subtitle')}
             </p>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 w-full max-w-2xl">
-              {SUGGESTIONS.map(({ key, send, icon: Icon, iconClass, bgClass }) => (
-                <button
-                  key={key}
-                  onClick={() => {
-                    // Fill the input (don't auto-send) so the user can tweak it first.
-                    const draft = send ?? t(`${key}_text` as Parameters<typeof t>[0])
-                    inputResetRef.current?.(draft, [])
-                  }}
-                  className="group text-left bg-surface border border-default rounded-xl p-3.5 cursor-pointer hover:border-accent hover:shadow-sm transition-all"
-                >
-                  <div className="flex items-center gap-2 mb-1.5">
-                    <span
-                      className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${bgClass}`}
-                    >
-                      <Icon size={15} className={iconClass} />
-                    </span>
-                    <span className="font-medium text-sm text-content">
-                      {t(`${key}_title` as Parameters<typeof t>[0])}
-                    </span>
-                  </div>
-                  <p className="text-xs text-content-tertiary leading-relaxed line-clamp-2">
-                    {t(`${key}_text` as Parameters<typeof t>[0])}
-                  </p>
-                </button>
-              ))}
-            </div>
+            {suggestions.length > 0 && (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 w-full max-w-2xl">
+                {suggestions.map(({ key, title, text, prompt, icon: Icon, iconClass, bgClass }) => (
+                  <button
+                    key={key}
+                    onClick={() => {
+                      // Fill the input (don't auto-send) so the user can tweak it first.
+                      inputResetRef.current?.(prompt, [])
+                    }}
+                    className="group flex flex-col justify-start text-left bg-surface border border-default rounded-xl p-3.5 cursor-pointer hover:border-accent hover:shadow-sm transition-all"
+                  >
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <span
+                        className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${bgClass}`}
+                      >
+                        <Icon size={15} className={iconClass} />
+                      </span>
+                      <span className="font-medium text-sm text-content">{title}</span>
+                    </div>
+                    <p className="text-xs text-content-tertiary leading-relaxed line-clamp-2">{text}</p>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         ) : (
           <div className="py-3 max-w-3xl mx-auto">
-            {messages.map((msg) =>
+            {messages.map((msg, i) =>
               msg.kind === 'divider' ? (
                 <div key={msg.id} className="flex items-center gap-3 px-6 py-3 text-content-tertiary">
                   <span
@@ -380,6 +415,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ baseUrl }) => {
                     onEdit={handleEdit}
                     onDelete={handleDelete}
                     onMediaLoad={handleMediaLoad}
+                    turnSeq={turnSeqs[i]}
                   />
                 </div>
               )

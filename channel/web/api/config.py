@@ -16,6 +16,7 @@ from agent.permission import (
     normalize_mode as permission_normalize_mode,
 )
 from channel.web.core._common import (
+    _can_reveal_in_file_manager,
     _read_config_file_for_write,
     _require_auth,
     _write_config_file_for_write,
@@ -154,6 +155,8 @@ class ConfigHandler:
                 "api_keys": api_keys_masked,
                 "providers": providers,
                 "web_password_masked": masked_pwd,
+                # Whether "show in folder" can open this machine's file manager.
+                "can_reveal_files": _can_reveal_in_file_manager(),
             }
             # The desktop app runs on the local trusted machine, so it can edit
             # the real password in place (cursor at the end, delete to clear).
@@ -208,11 +211,14 @@ class ConfigHandler:
                     merged = dict(local_config.get("reasoning_effort_by_model") or {})
                     merged.update(value)
                     value = merged
-                local_config[key] = value
                 applied[key] = value
 
             if not applied and not nested:
                 return json.dumps({"status": "error", "message": "no valid keys to update"})
+
+            # Apply only after every value coerced, so a rejected save changes nothing.
+            for key, value in applied.items():
+                local_config[key] = value
 
             config_path = os.path.join(get_data_root(), "config.json")
             file_cfg = _read_config_file_for_write()

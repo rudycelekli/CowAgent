@@ -51,8 +51,52 @@ const CONFIGURED_FEED = (loadAppConfig()?.updateFeedUrl || '').trim()
 // /legacy/ segment so it gets the win-legacy release instead of the standard.
 const FEED_BASE = 'https://cowagent.ai/update/' + (isLegacyWindows() ? 'legacy/' : '')
 const feedUrlFor = (china: boolean) => {
-  if (CONFIGURED_FEED) return CONFIGURED_FEED
-  return china ? `${FEED_BASE}?lang=zh` : FEED_BASE
+  if (CONFIGURED_FEED) return withFeedQuery(CONFIGURED_FEED)
+  return withFeedQuery(china ? `${FEED_BASE}?lang=zh` : FEED_BASE)
+}
+
+// A channel set explicitly at build time (publish.channel) names a dedicated
+// feed file, e.g. one per Windows generation. setFeedURL replaces the packaged
+// app-update.yml, so that channel has to be passed along. The channel
+// electron-builder derives from a pre-release version tag is left out, so
+// those builds keep reading the default feed file.
+let packagedChannelCache: string | null | undefined
+function packagedChannel(): string | undefined {
+  if (packagedChannelCache === undefined) {
+    packagedChannelCache = null
+    try {
+      const text = fs.readFileSync(path.join(process.resourcesPath, 'app-update.yml'), 'utf8')
+      const channel = text.match(/^channel:\s*['"]?([\w.-]+)['"]?\s*$/m)?.[1]
+      const versionTag = app.getVersion().split('-')[1]?.split('.')[0]?.toLowerCase()
+      if (channel && channel !== 'latest' && channel.toLowerCase() !== versionTag) {
+        packagedChannelCache = channel
+      }
+    } catch {
+      // no packaged update config: use the default channel
+    }
+  }
+  return packagedChannelCache ?? undefined
+}
+
+// Extra query parameters the renderer may attach to the feed URL, so a feed
+// server can tailor its answer to this install. Empty unless set, in which
+// case the feed URL is used exactly as above. electron-updater carries the
+// feed URL's query over to the files it resolves from it.
+let feedQuery: Record<string, string> = {}
+const FEED_QUERY_KEY = /^[A-Za-z0-9_-]{1,32}$/
+const FEED_QUERY_MAX_ENTRIES = 8
+const FEED_QUERY_MAX_VALUE = 256
+
+function withFeedQuery(url: string): string {
+  const entries = Object.entries(feedQuery)
+  if (entries.length === 0) return url
+  try {
+    const u = new URL(url)
+    for (const [k, v] of entries) u.searchParams.set(k, v)
+    return u.toString()
+  } catch {
+    return url
+  }
 }
 
 // Which origin the current session prefers, derived from the app UI language
@@ -64,9 +108,10 @@ let downloadFellBack = false
 
 function applyFeedUrl(): void {
   const url = feedUrlFor(preferChina)
+  const channel = packagedChannel()
   try {
-    autoUpdater.setFeedURL({ provider: 'generic', url })
-    log(`feed url set: ${url} (preferChina=${preferChina})`)
+    autoUpdater.setFeedURL({ provider: 'generic', url, ...(channel ? { channel } : {}) })
+    log(`feed url set: ${url} (preferChina=${preferChina}${channel ? `, channel=${channel}` : ''})`)
   } catch (err) {
     log(`feed url set failed: ${(err as Error)?.message || String(err)}`)
   }
@@ -79,6 +124,23 @@ export function setUpdateLanguage(lang: string | undefined): void {
     preferChina = china
     if (app.isPackaged) applyFeedUrl()
   }
+}
+
+// Replace the extra feed query (see feedQuery). Invalid keys and non-string
+// values are dropped; an empty or invalid input clears it.
+export function setUpdateFeedQuery(params: unknown): void {
+  const next: Record<string, string> = {}
+  if (params && typeof params === 'object' && !Array.isArray(params)) {
+    for (const [k, v] of Object.entries(params as Record<string, unknown>)) {
+      if (Object.keys(next).length >= FEED_QUERY_MAX_ENTRIES) break
+      if (!FEED_QUERY_KEY.test(k) || typeof v !== 'string') continue
+      const value = v.trim()
+      if (value && value.length <= FEED_QUERY_MAX_VALUE) next[k] = value
+    }
+  }
+  if (JSON.stringify(next) === JSON.stringify(feedQuery)) return
+  feedQuery = next
+  if (app.isPackaged) applyFeedUrl()
 }
 
 // Persist update logs to a file so a user hitting a silent "spinner never

@@ -8,8 +8,12 @@ import Markdown from '../../components/Markdown'
 import { Btn, Field, Modal, TextInput } from '../settings/primitives'
 import { SegTabs } from './SegTabs'
 import { parseSkillFrontmatter } from './frontmatter'
+import { product } from '@product'
 
 type Tab = 'market' | 'upload'
+
+const uploadOnly = product.skills?.uploadOnly === true
+const initialTab: Tab = uploadOnly ? 'upload' : 'market'
 type Step = 'input' | 'preview' | 'done'
 type UploadFile = { file: File; path: string }
 
@@ -116,7 +120,7 @@ interface SkillAddModalProps {
 }
 
 const SkillAddModal: React.FC<SkillAddModalProps> = ({ open, onClose, onInstalled }) => {
-  const [tab, setTab] = useState<Tab>('market')
+  const [tab, setTab] = useState<Tab>(initialTab)
   const [source, setSource] = useState<SkillMarketSource>('hub')
   const [value, setValue] = useState('')
   const [step, setStep] = useState<Step>('input')
@@ -129,10 +133,12 @@ const SkillAddModal: React.FC<SkillAddModalProps> = ({ open, onClose, onInstalle
   const [dragOver, setDragOver] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const folderRef = useRef<HTMLInputElement>(null)
+  // Bumped when a fetch or upload is abandoned, so its late reply is ignored.
+  const reqRef = useRef(0)
 
   useEffect(() => {
     if (!open) return
-    setTab('market')
+    setTab(initialTab)
     setSource('hub')
     setValue('')
     setStep('input')
@@ -151,7 +157,12 @@ const SkillAddModal: React.FC<SkillAddModalProps> = ({ open, onClose, onInstalle
   }
 
   const close = (): void => {
-    if (busy) return
+    if (busy) {
+      // Installing is quick and not safely interruptible; fetching can hang on the network.
+      if (step !== 'input') return
+      reqRef.current++
+      setBusy(false)
+    }
     discard()
     onClose()
   }
@@ -177,11 +188,30 @@ const SkillAddModal: React.FC<SkillAddModalProps> = ({ open, onClose, onInstalle
     }
   }
 
+  const stage = (request: () => Promise<SkillPreviewResult>): void => {
+    const req = ++reqRef.current
+    setError('')
+    setBusy(true)
+    request()
+      .then((data) => {
+        if (req !== reqRef.current) {
+          if (data.token) void apiClient.discardSkill(data.token).catch(() => undefined)
+          return
+        }
+        showPreview(data)
+      })
+      .catch((err) => {
+        if (req === reqRef.current) setError((err as Error).message || t('skill_install_error'))
+      })
+      .finally(() => {
+        if (req === reqRef.current) setBusy(false)
+      })
+  }
+
   const fetchPreview = (): void => {
     const spec = value.trim()
     if (!spec || busy) return
-    setError('')
-    void run(async () => showPreview(await apiClient.previewSkill(source, spec)), setError)
+    stage(() => apiClient.previewSkill(source, spec))
   }
 
   const upload = (files: UploadFile[]): void => {
@@ -192,7 +222,7 @@ const SkillAddModal: React.FC<SkillAddModalProps> = ({ open, onClose, onInstalle
       setError(t('skill_upload_too_large'))
       return
     }
-    void run(async () => showPreview(await apiClient.uploadSkill(files)), setError)
+    stage(() => apiClient.uploadSkill(files))
   }
 
   const confirm = (): void => {
@@ -234,7 +264,7 @@ const SkillAddModal: React.FC<SkillAddModalProps> = ({ open, onClose, onInstalle
   if (step === 'input') {
     footer = (
       <>
-        <Btn onClick={close} disabled={busy}>
+        <Btn onClick={close}>
           {t('mcp_cancel')}
         </Btn>
         {tab === 'market' && (
@@ -279,18 +309,20 @@ const SkillAddModal: React.FC<SkillAddModalProps> = ({ open, onClose, onInstalle
     <Modal open={open} size="lg" title={t('skill_add')} onClose={close} footer={footer}>
       {step === 'input' && (
         <>
-          <SegTabs<Tab>
-            value={tab}
-            onChange={(next) => {
-              if (busy) return
-              setTab(next)
-              setError('')
-            }}
-            tabs={[
-              { value: 'market', label: t('skill_add_tab_market'), icon: Store },
-              { value: 'upload', label: t('skill_add_tab_upload'), icon: Upload },
-            ]}
-          />
+          {!uploadOnly && (
+            <SegTabs<Tab>
+              value={tab}
+              onChange={(next) => {
+                if (busy) return
+                setTab(next)
+                setError('')
+              }}
+              tabs={[
+                { value: 'market', label: t('skill_add_tab_market'), icon: Store },
+                { value: 'upload', label: t('skill_add_tab_upload'), icon: Upload },
+              ]}
+            />
+          )}
           {tab === 'market' ? (
             <>
               <Field label={t('skill_source')}>

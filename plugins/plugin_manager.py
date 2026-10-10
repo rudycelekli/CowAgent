@@ -6,10 +6,11 @@ import json
 import os
 import sys
 
+from common.atomic_write import write_json_atomic
 from common.log import logger
 from common.singleton import singleton
 from common.sorted_dict import SortedDict
-from config import remove_plugin_config, write_plugin_config, get_data_root, get_resource_root
+from config import write_plugin_config, get_data_root, get_resource_root
 
 from .event import *
 
@@ -73,21 +74,7 @@ class PluginManager:
         and load_config has no guard around that. See load_config for why a
         damaged store must not be allowed to abort the load.
         """
-        cfg_path = os.path.join(_plugins_data_dir(), "plugins.json")
-        temporary = f"{cfg_path}.tmp"
-        try:
-            with open(temporary, "w", encoding="utf-8") as f:
-                json.dump(self.pconf, f, indent=4, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(temporary, cfg_path)
-        except Exception:
-            try:
-                if os.path.exists(temporary):
-                    os.remove(temporary)
-            except OSError:
-                pass
-            raise
+        write_json_atomic(os.path.join(_plugins_data_dir(), "plugins.json"), self.pconf)
 
     @staticmethod
     def _read_plugin_store(path: str):
@@ -110,6 +97,24 @@ class PluginManager:
         if not isinstance(stored, dict) or not isinstance(stored.get("plugins"), dict):
             logger.warning("Plugin config %s has no \"plugins\" mapping, ignoring it" % path)
             return None
+        entries = stored["plugins"]
+        for name in list(entries):
+            entry = entries[name]
+            if not isinstance(entry, dict):
+                logger.warning("Plugin entry %s in %s is not an object, ignoring it" % (name, path))
+                del entries[name]
+                continue
+            # Both keys are read with a bare subscript from here on -- the sort
+            # below and scan_plugins -- so a hand-edited entry that lost one of
+            # them takes every plugin down with it. Fall back to the values the
+            # plugin's own registration uses (register/desire_priority).
+            priority = entry.get("priority")
+            if isinstance(priority, bool) or not isinstance(priority, (int, float)):
+                logger.warning("Plugin entry %s in %s has no numeric priority, using 0" % (name, path))
+                entry["priority"] = 0
+            if not isinstance(entry.get("enabled"), bool):
+                logger.warning("Plugin entry %s in %s has no enabled flag, using true" % (name, path))
+                entry["enabled"] = True
         return stored
 
     def load_config(self):
@@ -176,7 +181,7 @@ class PluginManager:
     def scan_plugins(self):
         logger.debug("Scanning plugins ...")
         plugins_dir = _plugins_resource_dir()
-        raws = [self.plugins[name] for name in self.plugins]
+        raws = {name: self.plugins[name] for name in self.plugins}
         for plugin_name in os.listdir(plugins_dir):
             plugin_path = os.path.join(plugins_dir, plugin_name)
             if os.path.isdir(plugin_path):
@@ -202,8 +207,9 @@ class PluginManager:
                         logger.warn("Failed to import plugin %s: %s" % (plugin_name, e))
                         continue
         pconf = self.pconf
-        news = [self.plugins[name] for name in self.plugins]
-        new_plugins = list(set(news) - set(raws))
+        # Compare by registry key: a reload registers a new class object.
+        new_plugins = [self.plugins[name] for name in self.plugins
+                       if name not in raws]
         modified = False
         for name, plugincls in self.plugins.items():
             rawname = plugincls.name
@@ -246,13 +252,15 @@ class PluginManager:
                 for event in instance.handlers:
                     if event not in self.listening_plugins:
                         self.listening_plugins[event] = []
-                    self.listening_plugins[event].append(name)
+                    if name not in self.listening_plugins[event]:
+                        self.listening_plugins[event].append(name)
         self.refresh_order()
         return failed_plugins
 
     def reload_plugin(self, name: str):
         name = name.upper()
-        remove_plugin_config(name)
+        # Keep the loaded config: a plugin only falls back to its own config.json,
+        # so settings from plugins/config.json would be lost. #reconf reloads config.
         if name in self.instances:
             for event in self.listening_plugins:
                 if name in self.listening_plugins[event]:

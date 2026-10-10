@@ -18,6 +18,8 @@ export interface ElectronAPI {
   selectFile: (filters?: { name: string; extensions: string[] }[]) => Promise<string | null>
   /** Open a local file with the OS default app. Resolves to '' on success. */
   openPath: (targetPath: string) => Promise<string>
+  /** Show a local file selected in Finder / Explorer. */
+  revealPath?: (targetPath: string) => Promise<void>
   // Listener registrars return an unsubscribe fn for cleanup.
   onBackendStatus: (callback: (data: BackendStatusEvent) => void) => () => void
   onBackendLog: (callback: (line: string) => void) => () => void
@@ -29,6 +31,8 @@ export interface ElectronAPI {
   onMenuAction?: (callback: (action: string) => void) => () => void
   // Current app version string (e.g. "0.0.5").
   getAppVersion?: () => Promise<string>
+  // OS-level microphone access (prompts once on macOS; true elsewhere).
+  requestMicAccess?: () => Promise<boolean>
   // Launch-at-login toggle (macOS + Windows). get returns the effective state;
   // set returns the real outcome so the UI can surface refusals/errors.
   getLoginItemEnabled?: () => Promise<boolean>
@@ -52,6 +56,9 @@ export interface ElectronAPI {
   checkForUpdate?: (lang?: string) => Promise<void>
   downloadUpdate?: (lang?: string) => Promise<void>
   installUpdate?: () => Promise<void>
+  // Extra query parameters appended to the update feed URL; {} clears them.
+  // Unused by the standard build.
+  setUpdateFeedQuery?: (params: Record<string, string>) => Promise<void>
   onUpdateStatus?: (callback: (status: UpdateStatus) => void) => () => void
   // Override the window/Dock/taskbar icon and title at runtime (cached across
   // launches). Used by product extensions; unused by the standard build.
@@ -233,6 +240,8 @@ export interface WorkspaceEntry {
   abs_path?: string
   raw_url?: string
   preview_url?: string
+  /** The conversation turn that produced it, when a file card or the turn's auto-open opened it. */
+  origin?: ArtifactOrigin
 }
 
 /** Response of GET /api/workspace/read: the editor's initial content. */
@@ -297,6 +306,72 @@ export interface Artifact {
   size: number
   raw_url: string
   preview_url: string
+}
+
+/** Where in the conversations a file was produced. */
+export interface ArtifactOrigin {
+  session_id: string
+  agent_id: string
+  /** The turn's question, or null for a turn not persisted yet. */
+  turn_seq: number | null
+}
+
+/** One row of GET /api/artifacts: a file some conversation produced. */
+export interface ArtifactListItem extends Artifact {
+  id: number
+  /** The name the user gave it in the view; '' shows the file name. */
+  title: string
+  exists: boolean
+  agent_id: string
+  agent_name: string
+  session_id: string
+  session_title: string
+  turn_seq: number | null
+  /** The producing conversation is a console one that still exists. */
+  can_jump: boolean
+  source: string
+  created_at: number
+  updated_at: number
+  pinned_at: number
+}
+
+// ============================================================
+// Menu the user arranged (/api/menu), shared with the web console
+// ============================================================
+
+/** What the backend works out on each read to show an artifact entry. */
+export interface MenuFile {
+  file_name: string
+  kind: FileKind
+  exists: boolean
+  previewable?: boolean
+  raw_url: string
+  preview_url: string
+}
+
+export interface MenuItem {
+  id: string
+  /** `builtin` names a page by `view`; `artifact` shows a file by `path`; `url` shows a web page. */
+  type: 'builtin' | 'artifact' | 'url'
+  title: string
+  icon: string
+  view?: string
+  hidden?: boolean
+  path?: string
+  url?: string
+  open?: 'embed' | 'tab'
+  file?: MenuFile
+}
+
+export interface MenuGroup {
+  id: string
+  title: string
+  items: MenuItem[]
+}
+
+export interface MenuDoc {
+  version?: number
+  groups: MenuGroup[]
 }
 
 /** Live tool event during SSE streaming. */
