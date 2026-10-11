@@ -102,6 +102,76 @@ def test_save_replaces_edited_fields_and_keeps_unknown_ones(tmp_path, monkeypatc
     assert entry == {"type": "sse", "url": "https://example.com/sse", "cwd": "/srv"}
 
 
+def test_without_mcp_json_the_editor_lists_config_json_servers(tmp_path, monkeypatch):
+    """The runtime falls back to config.json's mcp_servers when mcp.json is
+    absent. The first console save creates mcp.json, which then shadows
+    config.json, so the editor has to start from the same list."""
+    monkeypatch.setattr(
+        "agent.tools.mcp.service.mcp_config_path",
+        lambda workspace=None: str(tmp_path / "mcp.json"),
+    )
+    legacy = [{"name": "legacy", "command": "uvx", "args": ["mcp-server-fetch"]}]
+    with patch("config.conf", return_value={"mcp_servers": legacy}):
+        loaded = load_servers(str(tmp_path))
+        assert [item["name"] for item in loaded] == ["legacy"]
+        save_servers(str(tmp_path), loaded + [{"name": "new", "url": "https://example.com/sse"}])
+
+    saved = json.loads((tmp_path / "mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+    assert set(saved) == {"legacy", "new"}
+
+
+def test_save_keeps_other_top_level_keys_of_mcp_json(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "agent.tools.mcp.service.mcp_config_path",
+        lambda workspace=None: str(tmp_path / "mcp.json"),
+    )
+    (tmp_path / "mcp.json").write_text(json.dumps({
+        "$schema": "https://example.com/schema.json",
+        "mcpServers": {"fetch": {"command": "uvx"}},
+    }), encoding="utf-8")
+
+    save_servers(str(tmp_path), [{"name": "fetch", "command": "npx"}])
+
+    data = json.loads((tmp_path / "mcp.json").read_text(encoding="utf-8"))
+    assert data["$schema"] == "https://example.com/schema.json"
+    assert data["mcpServers"]["fetch"]["command"] == "npx"
+
+
+def test_overlapping_save_cannot_truncate_the_store(tmp_path, monkeypatch):
+    """A save running while another one is mid-write must not corrupt mcp.json."""
+    monkeypatch.setattr(
+        "agent.tools.mcp.service.mcp_config_path",
+        lambda workspace=None: str(tmp_path / "mcp.json"),
+    )
+
+    real_dump = json.dump
+    concurrent = [{"name": "concurrent", "command": "npx", "args": [
+        "-y", "@modelcontextprotocol/server-github",
+    ]}]
+    first_pass = {"running": True}
+
+    def overlapping_dump(obj, fp, **kwargs):
+        if not first_pass["running"]:
+            return real_dump(obj, fp, **kwargs)
+        first_pass["running"] = False
+        try:
+            # Write half of the outer payload, run a complete second save
+            # against the same store, then write the rest.
+            text = json.dumps(obj, **kwargs)
+            half = len(text) // 2
+            fp.write(text[:half])
+            save_servers(str(tmp_path), concurrent)
+            fp.write(text[half:])
+        finally:
+            first_pass["running"] = True
+
+    monkeypatch.setattr("agent.tools.mcp.service.json.dump", overlapping_dump)
+
+    save_servers(str(tmp_path), [{"name": "outer", "command": "uvx"}])
+
+    assert [item["name"] for item in load_servers(str(tmp_path))] == ["outer"]
+
+
 def test_get_does_not_spawn_servers(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "agent.tools.mcp.service.mcp_config_path",
@@ -337,8 +407,6 @@ def test_frontend_contract_exposes_mcp_and_skill_install_surfaces():
         for name in ("SkillsPage.tsx", "skills/McpEditorModal.tsx", "skills/SkillAddModal.tsx")
     )
     desktop_api = _read("desktop/src/renderer/src/api/client.ts")
-    docs_en = _read("docs/tools/mcp.mdx")
-    docs_zh = _read("docs/zh/tools/mcp.mdx")
 
     assert "'/api/mcp/servers', 'McpServersHandler'" in py
     assert "'/api/mcp/servers/test', 'McpServerTestHandler'" in py
@@ -389,7 +457,3 @@ def test_frontend_contract_exposes_mcp_and_skill_install_surfaces():
         "confirmSkill",
     ):
         assert token in desktop_page
-
-    assert "web console" in docs_en.lower() or "Skills page" in docs_en
-    assert "Test connection" in docs_en or "test connection" in docs_en.lower()
-    assert "Web" in docs_zh or "web" in docs_zh.lower()

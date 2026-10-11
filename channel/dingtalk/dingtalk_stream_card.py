@@ -14,10 +14,28 @@ import time
 from typing import Any, Callable, Optional
 
 from common.log import logger
+from common.markdown_fence import replace_fenced_blocks
 
 _STREAM_THROTTLE_S = 0.15
+# How long the finalizing card update may take before we stop waiting; a
+# timeout feeds back into the delivery claim.
+_FINALIZE_JOIN_SECONDS = 8.0
 _FENCE_RE = re.compile(r"```[\w+-]*\n.*?```", re.DOTALL)
-_HTML_TAG_RE = re.compile(r"</?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>")
+_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+# Only real HTML element names are stripped: generics such as List<String>,
+# Map<K, V> or placeholders like <file> are ordinary text in a reply.
+_HTML_TAG_NAMES = (
+    "a|abbr|address|article|aside|audio|b|big|blockquote|body|br|button|caption|"
+    "center|cite|code|col|colgroup|dd|del|details|dfn|div|dl|dt|em|figcaption|"
+    "figure|font|footer|form|h[1-6]|head|header|hr|html|i|iframe|img|input|ins|"
+    "kbd|label|li|mark|nav|ol|p|picture|pre|q|s|samp|section|small|source|span|"
+    "strike|strong|style|sub|summary|sup|table|tbody|td|tfoot|th|thead|title|tr|"
+    "tt|u|ul|var|video"
+)
+_HTML_TAG_RE = re.compile(
+    rf"</?(?:{_HTML_TAG_NAMES})(?:\s[^<>]*)?/?>",
+    re.IGNORECASE,
+)
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 _BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
 _IMG_RE = re.compile(
@@ -47,11 +65,16 @@ def sanitize_dingtalk_markdown(text: str) -> str:
 
     fences: list[str] = []
 
-    def _hold_fence(match: re.Match) -> str:
-        fences.append(match.group(0))
+    def _hold(block: str) -> str:
+        fences.append(block)
         return f"\x00FENCE{len(fences) - 1}\x00"
 
-    protected = _FENCE_RE.sub(_hold_fence, normalised)
+    def _hold_fence(match: re.Match) -> str:
+        return _hold(match.group(0))
+
+    protected = replace_fenced_blocks(normalised, lambda _info, _code, block: _hold(block))
+    protected = _FENCE_RE.sub(_hold_fence, protected)
+    protected = _INLINE_CODE_RE.sub(_hold_fence, protected)
     protected = _HTML_COMMENT_RE.sub("", protected)
     protected = _BR_RE.sub("\n", protected)
     protected = _IMG_RE.sub(lambda match: f"![]({match.group(1)})", protected)
@@ -170,13 +193,14 @@ class DingTalkCardStreamer:
             if self._ensure_card() is None:
                 return
             if not markdown.strip():
-                self._submit("fail", wait=True)
+                delivered = self._submit("fail", wait=True)
             else:
                 body, buttons = build_dingtalk_card_finish_payload(
                     self.context, markdown
                 )
-                self._submit("finish", (body, buttons), wait=True)
-            self._mark_streamed()
+                delivered = self._submit("finish", (body, buttons), wait=True)
+            if delivered:
+                self._mark_streamed()
             return
 
         markdown = str(final_response) if final_response else accumulated
@@ -185,8 +209,8 @@ class DingTalkCardStreamer:
         if self._ensure_card() is None:
             return
         body, buttons = build_dingtalk_card_finish_payload(self.context, markdown)
-        self._submit("finish", (body, buttons), wait=True)
-        self._mark_streamed()
+        if self._submit("finish", (body, buttons), wait=True):
+            self._mark_streamed()
 
     def _mark_streamed(self) -> None:
         if self.context is None:
@@ -224,7 +248,7 @@ class DingTalkCardStreamer:
         return card
 
     def _start_worker(self) -> None:
-        if self.immediate or self._worker is not None:
+        if self.immediate or (self._worker is not None and self._worker.is_alive()):
             return
         worker = threading.Thread(
             target=self._run_worker,
@@ -235,12 +259,17 @@ class DingTalkCardStreamer:
         worker.start()
 
     def _run_worker(self) -> None:
-        while True:
-            item = self._queue.get()
-            if item is None:
-                return
-            kind, payload = item
-            self._apply(kind, payload)
+        try:
+            while True:
+                item = self._queue.get()
+                if item is None:
+                    return
+                kind, payload = item
+                self._apply(kind, payload)
+        finally:
+            # The sentinel retires this worker; drop it so _start_worker can start a new one.
+            if self._worker is threading.current_thread():
+                self._worker = None
 
     def _enqueue_stream(self, force: bool) -> None:
         with self._lock:
@@ -255,17 +284,27 @@ class DingTalkCardStreamer:
         self._last_streamed = markdown
         self._submit("stream", markdown, wait=False)
 
-    def _submit(self, kind: str, payload=None, wait: bool = False) -> None:
+    def _submit(self, kind: str, payload=None, wait: bool = False) -> bool:
+        """Queue one card update; report whether it was applied.
+        
+        Streaming pushes return True once queued; a waiting submit (finalize)
+        returns True only after the worker ran it, so send() knows whether it still
+        owes a webhook fallback.
+        """
         if self.immediate:
             self._apply(kind, payload)
-            return
+            return True
         if self._worker is None:
             self._start_worker()
         self._queue.put((kind, payload))
-        if wait:
-            self._queue.put(None)
-            if self._worker is not None:
-                self._worker.join(timeout=8)
+        if not wait:
+            return True
+        self._queue.put(None)
+        worker = self._worker
+        if worker is None:
+            return False
+        worker.join(timeout=_FINALIZE_JOIN_SECONDS)
+        return not worker.is_alive() and not self.disabled
 
     def _apply(self, kind: str, payload) -> None:
         card = self.card

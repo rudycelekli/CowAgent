@@ -19,6 +19,46 @@ def _write_json(path: Path, value: dict):
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
+@pytest.mark.parametrize("default", [None, "", "   ", " primary ", "primary"])
+def test_backup_uses_the_registry_default_for_a_supported_roster(tmp_path, default):
+    workspace = tmp_path / "workspace"
+    data = tmp_path / "data"
+    settings = {
+        "agent_workspace": str(workspace),
+        "agents": [
+            {"id": "disabled", "enabled": False},
+            {"id": "primary", "name": "Primary"},
+            {"id": "alpha", "name": "Alpha"},
+        ],
+    }
+    if default is not None:
+        settings["default_agent_id"] = default
+    _write_json(data / "config.json", settings)
+    registry = AgentRegistry.from_config(settings)
+    assert registry.default_agent_id == "primary"
+    for profile in registry.list():
+        profile.workspace_path.mkdir(parents=True, exist_ok=True)
+        (profile.workspace_path / "MEMORY.md").write_text(profile.id, encoding="utf-8")
+
+    archive = tmp_path / "backup.zip"
+    create_backup_archive(archive, data, workspace)
+    with zipfile.ZipFile(archive) as bundle:
+        manifest = json.loads(bundle.read("manifest.json"))
+        assert manifest["workspace_source"] == str(workspace.resolve())
+        for profile in registry.list():
+            assert bundle.read(f"agents/{profile.id}/workspace/MEMORY.md") == profile.id.encode()
+
+    target = tmp_path / "restored-workspace"
+    restored_data = tmp_path / "restored-data"
+    restore_backup_archive(archive, restored_data, target)
+    restored = json.loads((restored_data / "config.json").read_text(encoding="utf-8"))
+    restored_registry = AgentRegistry.from_config(team.resolve(restored))
+    assert restored_registry.default_agent_id == "primary"
+    assert restored_registry.get().workspace_path == target.resolve()
+    for profile in restored_registry.list():
+        assert (profile.workspace_path / "MEMORY.md").read_text(encoding="utf-8") == profile.id
+
+
 def test_backup_restore_round_trip(tmp_path):
     source_data = tmp_path / "source-data"
     source_workspace = tmp_path / "source-workspace"
@@ -323,6 +363,59 @@ def test_multi_agent_restore_reuses_matching_local_destinations(tmp_path):
     }
 
 
+def test_multi_agent_restore_reuses_the_local_roster_file(tmp_path):
+    source_data = tmp_path / "source-data"
+    source_primary = tmp_path / "source-primary"
+    source_research = tmp_path / "source-research"
+    _write_json(
+        source_data / "config.json",
+        {
+            "default_agent_id": "primary",
+            "agents": [
+                {"id": "primary", "workspace": str(source_primary)},
+                {"id": "research", "workspace": str(source_research)},
+            ],
+        },
+    )
+    source_primary.mkdir()
+    source_research.mkdir()
+    (source_primary / "AGENT.md").write_text("new primary", encoding="utf-8")
+    (source_research / "AGENT.md").write_text("new research", encoding="utf-8")
+    archive = tmp_path / "multi.zip"
+    create_backup_archive(archive, source_data, source_primary)
+
+    target_data = tmp_path / "target-data"
+    local_primary = tmp_path / "local-primary"
+    local_research = tmp_path / "local-research"
+    local_primary.mkdir()
+    local_research.mkdir()
+    # What a current install leaves behind once the roster has moved out of
+    # config.json: the file beside the workspaces holds it, config.json holds
+    # none of it.
+    _write_json(target_data / "config.json", {"agent_workspace": str(local_primary)})
+    _write_json(
+        local_primary / "agents" / team.FILE_NAME,
+        {
+            "default_agent_id": "primary",
+            "agents": [
+                {"id": "primary"},
+                {"id": "research", "workspace": str(local_research)},
+            ],
+        },
+    )
+    (local_research / "AGENT.md").write_text("local research", encoding="utf-8")
+
+    restore_backup_archive(archive, target_data)
+
+    assert (local_primary / "AGENT.md").read_text(encoding="utf-8") == "new primary"
+    assert (local_research / "AGENT.md").read_text(encoding="utf-8") == "new research"
+    roster = team.read({"agent_workspace": str(local_primary)})
+    assert {item["id"]: item.get("workspace") for item in roster["agents"]} == {
+        "primary": None,
+        "research": str(local_research.resolve()),
+    }
+
+
 def test_multi_agent_restore_rejects_manifest_registry_mismatch(tmp_path):
     archive = tmp_path / "mismatch.zip"
     manifest = {
@@ -471,3 +564,71 @@ def test_restore_rejects_archive_carrying_user_scoped_workspaces(tmp_path):
 
     with pytest.raises(ValueError, match="user-scoped"):
         restore_backup_archive(archive, tmp_path / "data", tmp_path / "root")
+
+
+@pytest.mark.parametrize("style", ["ordinary", "duplicate_lists", "persisted_team"])
+def test_backup_restore_preserves_canonical_agent_lists(tmp_path, monkeypatch, style):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("COW_DATA_DIR", str(tmp_path / "data"))
+    data = tmp_path / "data"
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    (a / "MEMORY.md").write_text("agent a memory", encoding="utf-8")
+    (b / "MEMORY.md").write_text("agent b memory", encoding="utf-8")
+    pa = {"id": "a", "name": "A", "workspace": str(a)}
+    pb = {"id": "b", "name": "B", "workspace": str(b)}
+    prefix = {"agent_workspace": str(b), "default_agent_id": "b"}
+    if style == "ordinary":
+        raw = json.dumps({**prefix, "agents": [pa, pb]})
+    else:
+        raw = (json.dumps(prefix)[:-1] + ',"agents":' + json.dumps([pa])
+               + ',"agents":' + json.dumps([pb]) + "}")
+    data.mkdir()
+    (data / "config.json").write_text(raw, encoding="utf-8")
+    if style == "persisted_team":
+        _write_json(b / "agents" / "team.json", {
+            "agents": [pa, pb], "default_agent_id": "b",
+        })
+
+    archive = tmp_path / "backup.zip"
+    summary = create_backup_archive(archive, data, b)
+    assert {item["id"] for item in summary["agents"]} == {"a", "b"}
+    with zipfile.ZipFile(archive) as bundle:
+        assert bundle.read("agents/a/workspace/MEMORY.md") == b"agent a memory"
+        assert bundle.read("agents/b/workspace/MEMORY.md") == b"agent b memory"
+
+    target_data = tmp_path / "restored-data"
+    target = tmp_path / "restored-workspace"
+    result = restore_backup_archive(archive, target_data, target)
+    assert {item["id"] for item in result["agents"]} == {"a", "b"}
+    assert (target / "MEMORY.md").read_text(encoding="utf-8") == "agent b memory"
+    assert (target / "agents" / "a" / "MEMORY.md").read_text(encoding="utf-8") == "agent a memory"
+    restored = json.loads((target_data / "config.json").read_text(encoding="utf-8"))
+    registry = AgentRegistry.from_config(team.resolve(restored))
+    assert {profile.id for profile in registry.list()} == {"a", "b"}
+    assert registry.default_agent_id == "b"
+
+
+@pytest.mark.parametrize("body", [
+    '{"channel_type":["terminal","web"]}',
+    '{"channel_type":["terminal"],"channel_type":["web"]}',
+])
+def test_restore_legacy_archive_preserves_canonical_channel_lists(tmp_path, monkeypatch, body):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("COW_DATA_DIR", str(tmp_path / "data"))
+    archive = tmp_path / "legacy.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("manifest.json", json.dumps({"format": "cowagent-backup", "version": 1}))
+        bundle.writestr("data/config.json", body)
+        bundle.writestr("workspace/MEMORY.md", "legacy memory")
+    data = tmp_path / "data"
+    workspace = tmp_path / "workspace"
+    result = restore_backup_archive(archive, data, workspace)
+    restored = json.loads((data / "config.json").read_text(encoding="utf-8"))
+    assert restored["channel_type"] == ["terminal", "web"]
+    assert result["config_restored"] is True
+    assert (workspace / "MEMORY.md").read_text(encoding="utf-8") == "legacy memory"

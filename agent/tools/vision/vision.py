@@ -26,9 +26,10 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from agent.tools.base_tool import BaseTool, ToolResult
-from agent.tools.utils.url_safety import validate_url_safe
+from agent.tools.utils.url_safety import validate_url_safe, safe_get
 from common import const
 from common.log import logger
+from common.media_download import MAX_IMAGE_BYTES, MediaTooLargeError, read_response
 from common.utils import expand_path
 from config import conf
 
@@ -113,6 +114,7 @@ class VisionProvider:
     model_override: Optional[str] = None
     use_bot: bool = False  # When True, call via bot.call_vision instead of raw HTTP
     fallback_bot: Any = None  # Bot instance for non-main-model providers
+    use_responses: bool = False  # When True, call /responses instead of /chat/completions
 
 
 class VisionAPIError(Exception):
@@ -602,11 +604,17 @@ class Vision(BaseTool):
         model_override = preferred_model if (
             preferred_model and preferred_model.lower().startswith(_OPENAI_MODEL_PREFIXES)
         ) else None
+        from models.openai import responses_adapter
+        use_responses = (
+            responses_adapter.resolve_api_type(conf().get("open_ai_api_type"))
+            == responses_adapter.API_TYPE_RESPONSES
+        )
         return VisionProvider(
             name="OpenAI",
             api_key=api_key,
             api_base=self._ensure_v1(api_base),
             model_override=model_override,
+            use_responses=use_responses,
         )
 
     def _build_linkai_provider(self, preferred_model: Optional[str] = None) -> Optional[VisionProvider]:
@@ -633,7 +641,9 @@ class Vision(BaseTool):
         """Build a VisionProvider from a custom:<id> entry in custom_providers.
         Uses the standard OpenAI /chat/completions endpoint — any
         OpenAI-compatible multimodal endpoint works."""
-        from models.custom_provider import parse_custom_bot_type, get_custom_providers, _find_provider_by_id
+        from models.custom_provider import (
+            parse_custom_bot_type, get_custom_providers, get_provider_headers, _find_provider_by_id,
+        )
         _, custom_id = parse_custom_bot_type(provider_id)
         if not custom_id:
             return None
@@ -654,6 +664,7 @@ class Vision(BaseTool):
             name=entry.get("name") or provider_id,
             api_key=api_key,
             api_base=self._ensure_v1(api_base.rstrip("/")),
+            extra_headers=get_provider_headers(entry),
             model_override=model,
         )
 
@@ -771,14 +782,29 @@ class Vision(BaseTool):
 
     @staticmethod
     def _download_to_data_url(url: str) -> dict:
-        """Download a remote image and return it as a base64 data URL."""
-        resp = requests.get(url, timeout=30)
-        if resp.status_code != 200:
-            raise VisionAPIError(f"Failed to download image: HTTP {resp.status_code}")
-        content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
-        if not content_type.startswith("image/"):
-            content_type = "image/jpeg"
-        b64 = base64.b64encode(resp.content).decode("ascii")
+        """Download a remote image and return it as a base64 data URL.
+
+        Fetches through the shared redirect-aware SSRF helper. The guard in
+        ``_validate_url_safe`` only checks the URL the model supplied, so a
+        public URL that 3xx-redirects into a loopback / link-local /
+        cloud-metadata address would otherwise be pulled in unchecked.
+        """
+        resp = safe_get(url, timeout=30, stream=True)
+        try:
+            if resp.status_code != 200:
+                raise VisionAPIError(f"Failed to download image: HTTP {resp.status_code}")
+            content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+            if not content_type.startswith("image/"):
+                content_type = "image/jpeg"
+            try:
+                image = read_response(resp, MAX_IMAGE_BYTES)
+            except MediaTooLargeError as error:
+                raise VisionAPIError(
+                    f"Image too large: over {MAX_IMAGE_BYTES} bytes, url={url}"
+                ) from error
+            b64 = base64.b64encode(image).decode("ascii")
+        finally:
+            resp.close()
         data_url = f"data:{content_type};base64,{b64}"
         return {"type": "image_url", "image_url": {"url": data_url}}
 
@@ -794,13 +820,27 @@ class Vision(BaseTool):
 
         def _try_sips(max_dim: str, quality: str) -> bool:
             try:
+                info = subprocess.run(
+                    ["sips", "-g", "pixelHeight", "-g", "pixelWidth", path],
+                    capture_output=True, text=True, check=True,
+                )
+                dimensions = {}
+                for line in info.stdout.splitlines():
+                    name, _, value = line.strip().partition(": ")
+                    if name in ("pixelHeight", "pixelWidth"):
+                        dimensions[name] = int(value)
+                if len(dimensions) != 2 or min(dimensions.values()) <= 0:
+                    return False
+                # Unlike convert's ">" geometry, sips -Z also enlarges images.
+                # Omit resampling when the source already fits the maximum.
+                resize = ["-Z", max_dim] if max(dimensions.values()) > int(max_dim) else []
                 subprocess.run(
-                    ["sips", "-Z", max_dim, "-s", "formatOptions", quality,
+                    ["sips", *resize, "-s", "formatOptions", quality,
                      path, "--out", tmp.name],
                     capture_output=True, check=True,
                 )
                 return True
-            except (FileNotFoundError, subprocess.CalledProcessError):
+            except (FileNotFoundError, subprocess.CalledProcessError, ValueError):
                 return False
 
         def _try_convert(max_dim: str, quality: str) -> bool:
@@ -857,14 +897,28 @@ class Vision(BaseTool):
             ],
         }
 
+        endpoint = "/chat/completions"
+        if provider.use_responses:
+            from models.openai import responses_adapter
+            from models.openai_compatible_bot import OpenAICompatibleBot
+            payload = responses_adapter.build_responses_payload(
+                model=model,
+                messages=payload["messages"],
+                reasoning_effort=OpenAICompatibleBot._responses_reasoning_effort(model, {}),
+            )
+            endpoint = "/responses"
+
+        from models.openai.openai_http_client import resolve_host_headers
+        url = f"{provider.api_base}{endpoint}"
         headers = {
             "Authorization": f"Bearer {provider.api_key}",
             "Content-Type": "application/json",
+            **resolve_host_headers(url),
             **provider.extra_headers,
         }
 
         resp = requests.post(
-            f"{provider.api_base}/chat/completions",
+            url,
             headers=headers,
             json=payload,
             timeout=DEFAULT_TIMEOUT,
@@ -875,9 +929,12 @@ class Vision(BaseTool):
 
         data = resp.json()
 
-        if "error" in data:
+        if data.get("error"):
             msg = data["error"].get("message", "Unknown API error")
             raise VisionAPIError(f"API error - {msg}")
+
+        if provider.use_responses:
+            data = responses_adapter.responses_to_chat_completion(data)
 
         content = ""
         choices = data.get("choices", [])

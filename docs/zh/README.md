@@ -131,8 +131,8 @@ CowAgent 支持国内外主流厂商的大语言模型。**文本对话、图像
 | 厂商 | 代表模型 | 文本 | 图像理解 | 图像生成 | 语音识别 | 语音合成 | 向量 |
 | --- | --- | :-: | :-: | :-: | :-: | :-: | :-: |
 | [DeepSeek](https://docs.cowagent.ai/zh/models/deepseek) | deepseek-flash (V4.1) / pro | ✅ | ✅ | | | | |
-| [Claude](https://docs.cowagent.ai/zh/models/claude) | claude-opus-5 / fable-5.1 | ✅ | ✅ | | | | |
-| [OpenAI](https://docs.cowagent.ai/zh/models/openai) | gpt-6-astra / gpt-5.6 系列 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| [Claude](https://docs.cowagent.ai/zh/models/claude) | claude-opus-5-5 / fable-5.1 | ✅ | ✅ | | | | |
+| [OpenAI](https://docs.cowagent.ai/zh/models/openai) | gpt-6.1-sol / gpt-6 系列 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | [Gemini](https://docs.cowagent.ai/zh/models/gemini) | gemini-3.8-flash | ✅ | ✅ | ✅ | | | |
 | [MiniMax](https://docs.cowagent.ai/zh/models/minimax) | MiniMax-M3 | ✅ | ✅ | ✅ | | ✅ | |
 | [智谱 GLM](https://docs.cowagent.ai/zh/models/glm) | glm-5.3-flash、glm-5v-turbo | ✅ | ✅ | | ✅ | | ✅ |
@@ -227,6 +227,8 @@ CowAgent 支持国内外主流厂商的大语言模型。**文本对话、图像
 
 ## 🏷 更新日志
 
+> **2026.09.30：** [v2.2.0](https://github.com/zhayujie/CowAgent/releases/tag/2.2.0) — 新增能力中心、多 Agent 协作优化、Web 控制台重构、模型缓存命中率提升、稳定性与安全全面加强
+
 > **2026.09.14：** [v2.1.9](https://github.com/zhayujie/CowAgent/releases/tag/2.1.9) — 多 Agent 协作体验优化、模型列表配置与多兜底模型、通道接入修复、新增图像模型（gpt-image-2.5）、语音修复
 
 > **2026.09.10：** [v2.1.8](https://github.com/zhayujie/CowAgent/releases/tag/2.1.8) — 推出多 Agent 团队、定时任务支持手动创建、上下文用量可视化、模型和搜索工具接入、工作空间文件编辑
@@ -255,7 +257,7 @@ CowAgent 支持国内外主流厂商的大语言模型。**文本对话、图像
 
 微信扫码添加小助手，加入 CowAgent 开源项目交流群：
 
-<img width="130" src="https://img-1317903499.cos.ap-guangzhou.myqcloud.com/docs/open-community.png" />
+<img width="130" src="https://cdn.jsdelivr.net/gh/zhayujie/cowagent-assets@main/community/open-community.png" />
 
 也欢迎在 GitHub [提交 Issue](https://github.com/zhayujie/CowAgent/issues)，或加入 [**Discord 服务器**](https://discord.gg/9U8eA8v9TR) 交流：
 
@@ -278,7 +280,7 @@ CowAgent 支持国内外主流厂商的大语言模型。**文本对话、图像
 
 ## 🏢 企业服务
 
-<a href="https://link-ai.tech" target="_blank"><img width="650" src="https://cdn.link-ai.tech/image/link-ai-intro.jpg" /></a>
+<a href="https://link-ai.tech" target="_blank"><img width="650" src="https://cdn.jsdelivr.net/gh/zhayujie/cowagent-assets@main/community/link-ai-intro.png" /></a>
 
 > [LinkAI](https://link-ai.tech/) 是面向企业和个人的一站式 AI 智能体平台，为 CowAgent 提供云端托管和企业级支持：
 >
@@ -288,7 +290,7 @@ CowAgent 支持国内外主流厂商的大语言模型。**文本对话、图像
 
 **产品咨询和企业服务** 可联系产品客服：
 
-<img width="130" src="https://cdn.link-ai.tech/portal/linkai-customer-service.png" />
+<img width="130" src="https://cdn.jsdelivr.net/gh/zhayujie/cowagent-assets@main/community/customer-service.png" />
 
 <br/>
 

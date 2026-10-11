@@ -8,6 +8,7 @@ from config import conf
 from voice.voice import Voice
 import requests
 from common import const
+from common.media_download import MAX_FILE_BYTES, MediaTooLargeError, save_response
 from common.tmp_dir import TmpDir
 import datetime, random
 
@@ -69,8 +70,7 @@ class OpenaiVoice(Voice):
         except Exception as e:
             logger.error(f"[Openai] voiceToText exception: {e}", exc_info=True)
             reply = Reply(ReplyType.ERROR, "我暂时还无法听清您的语音，请稍后再试吧~")
-        finally:
-            return reply
+        return reply
 
 
     def textToVoice(self, text):
@@ -86,11 +86,26 @@ class OpenaiVoice(Voice):
                 'input': text,
                 'voice': conf().get("tts_voice_id") or "alloy"
             }
-            response = requests.post(url, headers=headers, json=data, timeout=REQUEST_TIMEOUT)
+            response = requests.post(url, headers=headers, json=data, timeout=REQUEST_TIMEOUT,
+                                     stream=True)
+            if response.status_code != 200:
+                logger.error(
+                    f"[OPENAI] text_to_Voice failed: status={response.status_code}, "
+                    f"resp={response.text[:200]}"
+                )
+                response.close()
+                reply = Reply(ReplyType.ERROR, "遇到了一点小问题，请稍后再问我吧")
+                return reply
             file_name = TmpDir().path() + datetime.datetime.now().strftime('%Y%m%d%H%M%S') + str(random.randint(0, 1000)) + ".mp3"
             logger.debug(f"[OPENAI] text_to_Voice file_name={file_name}, input={text}")
-            with open(file_name, 'wb') as f:
-                f.write(response.content)
+            try:
+                save_response(response, file_name, MAX_FILE_BYTES)
+            except MediaTooLargeError:
+                logger.error(
+                    f"[OPENAI] textToVoice audio too large: over {MAX_FILE_BYTES} bytes"
+                )
+                reply = Reply(ReplyType.ERROR, "遇到了一点小问题，请稍后再问我吧")
+                return reply
             logger.info("[OPENAI] text_to_Voice success")
             reply = Reply(ReplyType.VOICE, file_name)
         except Exception as e:

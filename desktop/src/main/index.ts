@@ -6,7 +6,7 @@ import http from 'http'
 import { PythonBackend, BackendError } from './python-manager'
 import { buildAppMenu } from './menu'
 import { createTray, destroyTray, getTray } from './tray'
-import { initUpdater, checkForUpdates, startDownload, quitAndInstall, setUpdateLanguage } from './updater'
+import { initUpdater, checkForUpdates, startDownload, quitAndInstall, setUpdateLanguage, setUpdateFeedQuery } from './updater'
 import { setupThemeIPC, loadAppConfig } from './themes'
 import { setupHttpRelayIPC } from './http-relay'
 import {
@@ -115,7 +115,8 @@ applyCachedAppName()
 // Windows shows notifications only when an AppUserModelID is set; without it
 // they are silently dropped. Harmless on macOS/Linux.
 if (process.platform === 'win32') {
-  app.setAppUserModelId('com.cowagent.desktop')
+  // Must match the installer's appId, which stamps it on the shortcuts.
+  app.setAppUserModelId(loadAppConfig()?.appUserModelId || 'com.cowagent.desktop')
 }
 
 let mainWindow: BrowserWindow | null = null
@@ -338,6 +339,7 @@ function createWindow() {
     frame: isMac ? undefined : false,
     backgroundColor: '#0e0e10',
     icon: getIconPath(),
+    title: app.name,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -346,6 +348,8 @@ function createWindow() {
     },
   })
 
+  // The window title follows the app name, not the renderer's static <title>.
+  mainWindow.on('page-title-updated', (e) => e.preventDefault())
   const persist = () => saveWindowState()
   mainWindow.on('resize', persist)
   mainWindow.on('move', persist)
@@ -591,6 +595,10 @@ function setupIPC() {
     return err
   })
 
+  ipcMain.handle('reveal-path', (_event, targetPath: string) => {
+    if (targetPath) shell.showItemInFolder(targetPath)
+  })
+
   // Custom window controls (used by Windows frameless titlebar)
   ipcMain.handle('window-minimize', () => mainWindow?.minimize())
   ipcMain.handle('window-maximize', () => {
@@ -661,6 +669,9 @@ function setupIPC() {
   ipcMain.handle('update-download', (_event, lang?: string) => {
     setUpdateLanguage(lang)
     startDownload()
+  })
+  ipcMain.handle('update-feed-query', (_event, params: unknown) => {
+    setUpdateFeedQuery(params)
   })
   ipcMain.handle('update-install', () => {
     // Let the window actually close so the app can fully quit — otherwise the
@@ -768,14 +779,17 @@ app.whenReady().then(async () => {
 
   // On macOS the Chromium-layer handler above isn't enough: getUserMedia also
   // needs system-level (TCC) microphone authorization, which only the native
-  // askForMediaAccess prompt can grant. Request it up front so the first mic
-  // click surfaces the system dialog instead of failing with a denied error.
-  if (process.platform === 'darwin') {
-    const micStatus = systemPreferences.getMediaAccessStatus('microphone')
-    if (micStatus === 'not-determined') {
-      systemPreferences.askForMediaAccess('microphone').catch(() => {})
+  // askForMediaAccess prompt can grant. The renderer asks for it right before
+  // the first recording, so the system dialog only appears when mic is used.
+  ipcMain.handle('mic-request-access', async () => {
+    if (process.platform !== 'darwin') return true
+    try {
+      if (systemPreferences.getMediaAccessStatus('microphone') === 'granted') return true
+      return await systemPreferences.askForMediaAccess('microphone')
+    } catch {
+      return false
     }
-  }
+  })
 
   setupIPC()
   setupThemeIPC()

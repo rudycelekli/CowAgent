@@ -66,6 +66,10 @@ export interface ProductModels {
   // Set true to show a masked+editable API key field for the current provider
   // inside basic settings, useful when the standalone models tab is hidden.
   showManagedApiKey?: boolean
+  // Optional actions rendered on the model / API key field label rows in basic
+  // settings (e.g. a link to where the value is managed).
+  ModelFieldLink?: React.FC
+  ApiKeyFieldLink?: React.FC
   // Optional replacement for the per-session model chip in the chat composer.
   // When set, the core renders this instead of its built-in provider-grouped
   // menu, so a build whose models come from a different source can present them
@@ -91,6 +95,30 @@ export interface ProductLinks {
   // The "what's new" page for a given version. `lang` is the UI language
   // (e.g. 'zh'). Return null to use the core docs site.
   releaseNotesUrl?: (version: string, lang: string) => string | null
+  // Hide the "what's new" entry of the update panel.
+  hideReleaseNotes?: boolean
+}
+
+export interface ProductSkills {
+  // Set true to only offer local upload when adding a skill, hiding the
+  // online sources and the skill hub link. Defaults to all sources.
+  uploadOnly?: boolean
+}
+
+export interface ProductSuggestion {
+  title: string
+  // Shown on the card.
+  text: string
+  // Dropped into the input on click; defaults to `text`.
+  prompt?: string
+  // Defaults to the built-in icon at the same position.
+  icon?: React.ComponentType<{ size?: number | string; className?: string }>
+}
+
+export interface ProductChat {
+  // Replaces the suggestion cards on the new-chat screen. Return null to keep
+  // the defaults; an empty list shows no cards.
+  useSuggestions?: () => ProductSuggestion[] | null
 }
 
 export interface ProductExtension {
@@ -101,4 +129,6 @@ export interface ProductExtension {
   models?: ProductModels
   nav?: ProductNav
   links?: ProductLinks
+  skills?: ProductSkills
+  chat?: ProductChat
 }

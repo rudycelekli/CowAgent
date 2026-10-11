@@ -5,7 +5,7 @@ Splits text into chunks with token limits and overlap
 """
 
 from __future__ import annotations
-from typing import List, Tuple
+from typing import List
 from dataclasses import dataclass
 
 
@@ -15,6 +15,8 @@ class TextChunk:
     text: str
     start_line: int
     end_line: int
+    # Ordinal of a hard-split piece of one over-long line; 0 for ordinary chunks.
+    part: int = 0
 
 
 class TextChunker:
@@ -72,18 +74,20 @@ class TextChunker:
                     current_chars = 0
                 
                 # Split long line into multiple chunks
-                for sub_chunk in self._split_long_line(line, max_chars):
+                for part, sub_chunk in enumerate(self._split_long_line(line, max_chars)):
                     chunks.append(TextChunk(
                         text=sub_chunk,
                         start_line=i,
-                        end_line=i
+                        end_line=i,
+                        part=part
                     ))
                 
                 start_line = i + 1
                 continue
             
             # Check if adding this line would exceed limit
-            if current_chars + line_chars > max_chars and current_chunk:
+            separator_chars = 1 if current_chunk else 0
+            if current_chars + separator_chars + line_chars > max_chars and current_chunk:
                 # Save current chunk
                 chunks.append(TextChunk(
                     text='\n'.join(current_chunk),
@@ -92,14 +96,16 @@ class TextChunker:
                 ))
                 
                 # Start new chunk with overlap
-                overlap_lines = self._get_overlap_lines(current_chunk, overlap_chars)
+                # Leave room for the incoming line and its separator.
+                overlap_budget = min(overlap_chars, max_chars - line_chars - 1)
+                overlap_lines = self._get_overlap_lines(current_chunk, overlap_budget)
                 current_chunk = overlap_lines + [line]
-                current_chars = sum(len(l) for l in current_chunk)
+                current_chars = sum(len(l) for l in current_chunk) + len(current_chunk) - 1
                 start_line = i - len(overlap_lines)
             else:
                 # Add line to current chunk
                 current_chunk.append(line)
-                current_chars += line_chars
+                current_chars += separator_chars + line_chars
         
         # Save last chunk
         if current_chunk:
@@ -128,7 +134,7 @@ class TextChunker:
         chars = 0
         
         for line in reversed(lines):
-            line_chars = len(line)
+            line_chars = len(line) + (1 if overlap else 0)
             if chars + line_chars > target_chars:
                 break
             overlap.insert(0, line)
@@ -148,7 +154,10 @@ class TextChunker:
     # one produced by the current algorithm (see detect_chunker_version), so
     # /memory status can suggest a rebuild instead of silently keeping stale
     # boundaries forever (file hashes do not change when only the chunker does).
-    CHUNKER_VERSION = 1
+    # v2: keep text before the first heading; end a heading's body at the next
+    # heading of any level (skipped levels used to be indexed twice).
+    # v3: hard-split pieces of one over-long line carry a part ordinal in their id.
+    CHUNKER_VERSION = 3
 
     def chunk_markdown(self, text: str) -> List[TextChunk]:
         """Chunk a markdown file while respecting its heading structure.
@@ -223,10 +232,10 @@ class TextChunker:
     def _md_leaf_segments(self, text: str, lines: List[str], markdown_it) -> List[dict]:
         """Return every heading's OWN direct body as a candidate segment.
 
-        A segment is the heading line plus its text up to its first DIRECT
-        CHILD heading (level == own + 1), or to the next heading of <= own
-        level. Parent headings do NOT swallow child bodies. 1-based line
-        numbers; dicts carry {'start_line','end_line','text'}.
+        A segment is the heading line plus its text up to the next heading of
+        any level, so parent headings do NOT swallow child bodies. Text before
+        the first heading is a segment of its own. 1-based line numbers; dicts
+        carry {'start_line','end_line','text'}.
         """
         md = markdown_it.MarkdownIt()
         toks = md.parse(text)
@@ -241,13 +250,18 @@ class TextChunker:
 
         n = len(heads)
         segs = []
+        # Text before the first heading (a preface, a note, a TOC) belongs to
+        # no heading, so it gets a segment of its own instead of being dropped.
+        first0 = heads[0]['line']
+        preface = '\n'.join(lines[:first0]).rstrip()
+        if preface.strip():
+            segs.append({'start_line': 1, 'end_line': first0, 'text': preface})
         for i, h in enumerate(heads):
             start0 = h['line']
-            end0 = len(lines)  # exclusive 0-based boundary
-            for j in range(i + 1, n):
-                if heads[j]['level'] == h['level'] + 1 or heads[j]['level'] <= h['level']:
-                    end0 = heads[j]['line']
-                    break
+            # A heading's own body stops at the next heading of ANY level: a
+            # deeper one is a child (even when levels are skipped, e.g. # then
+            # ###), a shallower or equal one closes the section.
+            end0 = heads[i + 1]['line'] if i + 1 < n else len(lines)  # exclusive 0-based
             # Convert to 1-based inclusive lines.
             start_line = start0 + 1
             end_line = end0  # end0 is 0-based exclusive -> 1-based inclusive end
