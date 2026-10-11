@@ -17,7 +17,7 @@ from urllib.parse import urlparse, unquote
 import requests
 
 from agent.tools.base_tool import BaseTool, ToolResult
-from agent.tools.utils.truncate import truncate_head, format_size
+from agent.tools.utils.truncate import truncate_head, truncate_line, format_size, DEFAULT_MAX_BYTES
 from agent.tools.utils.url_safety import validate_url_safe, safe_get
 from common.log import logger
 from common.media_download import MediaTooLargeError, read_response
@@ -236,7 +236,14 @@ class WebFetch(BaseTool):
             title = self._extract_title(html)
             text = self._extract_text(html)
 
-            return ToolResult.success(f"Title: {title}\n\nContent:\n{text}")
+            title, title_truncated = truncate_line(title, max_chars=512)
+            output = f"Title: {title}\n\nContent:\n{text}"
+            notice = "\n\n[Content truncated to the tool output budget]"
+            truncation = truncate_head(output, max_bytes=DEFAULT_MAX_BYTES - len(notice.encode("utf-8")))
+            output = truncation.content
+            if truncation.truncated or title_truncated:
+                output += notice
+            return ToolResult.success(output)
         finally:
             if response is not None:
                 response.close()
