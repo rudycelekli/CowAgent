@@ -1,5 +1,4 @@
 name: Windows Bash Streaming Tests
-
 on:
   workflow_dispatch:
   pull_request:
@@ -7,26 +6,116 @@ on:
       - "agent/tools/bash/bash.py"
       - "tests/test_bash_streaming.py"
       - ".github/workflows/test-windows-bash.yml"
-
+permissions:
+  contents: read
+env:
+  APP_SHA: ad8e64c39fae72598407c75ba89151102551fa54
+  BASE_SHA: c8b1dd8c148c4d49449a69965f35977866110cbb
+  CI_SHA: ${{ github.sha }}
+defaults:
+  run:
+    shell: bash
 jobs:
-  windows-bash-tests:
-    runs-on: windows-latest
-
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {python: "3.11", mode: test}
+          - {python: "3.13", mode: test}
+          - {python: "3.12", mode: lint}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
         with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Install dependencies
+          ref: ad8e64c39fae72598407c75ba89151102551fa54
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Verify application identity
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install pytest
-          python -m pip install -r requirements.txt
-
-      - name: Run Windows Bash streaming tests
-        run: python -m pytest tests/test_bash_streaming.py -v
+          VERIFY_DIR="$RUNNER_TEMP/file-cache-race-verification"
+          mkdir -p "$VERIFY_DIR"
+          echo "VERIFY_DIR=$VERIFY_DIR" >> "$GITHUB_ENV"
+          test "$(git rev-parse HEAD)" = "$APP_SHA"
+          test "$(git rev-parse "$CI_SHA^")" = "$APP_SHA"
+          git diff --exit-code "$APP_SHA" "$CI_SHA" -- . ':(exclude).github/workflows/test-windows-bash.yml'
+          printf 'application=%s\nvalidation=%s\nbase=%s\ntree=%s\n' "$APP_SHA" "$CI_SHA" "$BASE_SHA" "$(git rev-parse HEAD^{tree})" > "$VERIFY_DIR/identity.txt"
+          sha256sum channel/file_cache.py tests/test_file_cache_concurrency.py requirements.txt > "$VERIFY_DIR/application.sha256"
+      - name: Install upstream test dependencies
+        if: matrix.mode == 'test'
+        run: |
+          python --version | tee "$VERIFY_DIR/python-version.txt"
+          python -m pip install --upgrade pip 2>&1 | tee "$VERIFY_DIR/pip-upgrade.log"
+          python -m pip install pytest 2>&1 | tee "$VERIFY_DIR/pytest-install.log"
+          python -m pip install -r requirements.txt 2>&1 | tee "$VERIFY_DIR/requirements-install.log"
+      - name: Prove intended baseline failures
+        if: matrix.mode == 'test'
+        run: |
+          restore() { git checkout "$APP_SHA" -- channel/file_cache.py; }
+          trap restore EXIT
+          git show "$BASE_SHA:channel/file_cache.py" > channel/file_cache.py
+          set +e
+          python -m pytest tests/test_file_cache_concurrency.py -q --junitxml="$VERIFY_DIR/baseline.xml" > "$VERIFY_DIR/baseline.log" 2>&1
+          result=$?
+          set -e
+          cat "$VERIFY_DIR/baseline.log"
+          test "$result" = 1
+          python - <<'PY' | tee "$VERIFY_DIR/baseline-classified.txt"
+          import os
+          import xml.etree.ElementTree as ET
+          root = ET.parse(os.path.join(os.environ["VERIFY_DIR"], "baseline.xml")).getroot()
+          failures = {"test_concurrent_wecom_images_keep_both_first_files"}
+          controls = {
+              "test_duplicate_cached_file_remains_unique",
+              "test_clear_only_removes_selected_session",
+          }
+          cases = root.findall(".//testcase")
+          assert len(cases) == 3, "Expected exactly three file cache cases"
+          assert {case.attrib["name"] for case in cases} == failures | controls
+          assert not root.findall(".//error"), "Infrastructure errors are not a baseline"
+          assert not root.findall(".//skipped"), "All three Linux cases must execute"
+          for case in cases:
+              nodes = case.findall("failure")
+              if case.attrib["name"] in failures:
+                  assert len(nodes) == 1, ET.tostring(case)
+                  assert nodes[0].attrib.get("message", "").startswith(("assert ", "AssertionError: assert ")), ET.tostring(case)
+                  assert (nodes[0].text or "").rstrip().endswith("tests/test_file_cache_concurrency.py:97: AssertionError"), ET.tostring(case)
+                  assert "wecom_second.png" in nodes[0].attrib["message"]
+              else:
+                  assert not nodes, "Unchanged control must pass"
+          print("Exactly one intended AssertionError and two passing controls; zero errors/skips.")
+          PY
+          restore
+          trap - EXIT
+          sha256sum -c "$VERIFY_DIR/application.sha256"
+          git diff --exit-code "$APP_SHA" -- .
+      - name: Run required whole backend suite
+        if: matrix.mode == 'test'
+        run: python -m pytest tests/ -q 2>&1 | tee "$VERIFY_DIR/full-suite.log"
+      - name: Install upstream lint dependency
+        if: matrix.mode == 'lint'
+        run: python -m pip install ruff 2>&1 | tee "$VERIFY_DIR/ruff-install.log"
+      - name: Run required changed-file F gate
+        if: matrix.mode == 'lint'
+        run: |
+          git diff --name-only "$BASE_SHA" "$APP_SHA" -- '*.py' > "$VERIFY_DIR/changed-files.txt"
+          printf '%s\n' channel/file_cache.py tests/test_file_cache_concurrency.py > "$VERIFY_DIR/expected-files.txt"
+          diff "$VERIFY_DIR/expected-files.txt" "$VERIFY_DIR/changed-files.txt"
+          mapfile -t files < "$VERIFY_DIR/changed-files.txt"
+          ruff check "${files[@]}" --select F --ignore F403,F405 2>&1 | tee "$VERIFY_DIR/ruff.log"
+      - name: Verify final application identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$APP_SHA"
+          sha256sum -c "$VERIFY_DIR/application.sha256"
+          git diff --exit-code "$APP_SHA" -- .
+          git diff --exit-code "$APP_SHA" "$CI_SHA" -- . ':(exclude).github/workflows/test-windows-bash.yml'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: file-cache-race-${{ matrix.mode }}-${{ matrix.python }}
+          path: ${{ runner.temp }}/file-cache-race-verification
+          retention-days: 7
