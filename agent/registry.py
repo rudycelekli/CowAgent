@@ -320,6 +320,8 @@ class AgentRegistry:
                         f"agents '{existing.id}' and '{profile.id}' share workspace "
                         f"'{profile.workspace}'"
                     )
+            if profile.id == self._default_agent_id and not profile.enabled:
+                raise AgentRegistryError(f"default agent '{profile.id}' is disabled")
             self._profiles[profile.id] = profile
             self._validate_default(self._default_agent_id)
 
