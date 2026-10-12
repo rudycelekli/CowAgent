@@ -51,11 +51,11 @@ def any_to_mp3(any_path, mp3_path):
     """
     把任意格式转成mp3文件
     """
-    if not _pydub_available:
-        raise ImportError("pydub is required for audio conversion. Please install it with: pip install pydub")
     if any_path.endswith(".mp3"):
         shutil.copy2(any_path, mp3_path)
         return
+    if not _pydub_available:
+        raise ImportError("pydub is required for audio conversion. Please install it with: pip install pydub")
     sil_wav_path = None
     if any_path.endswith(".sil") or any_path.endswith(".silk") or any_path.endswith(".slk"):
         # pysilk decodes silk into wav only, so the audio needs a wav file of
@@ -76,11 +76,11 @@ def any_to_wav(any_path, wav_path):
     """
     把任意格式转成wav文件
     """
-    if not _pydub_available:
-        raise ImportError("pydub is required for audio conversion. Please install it with: pip install pydub")
     if any_path.endswith(".wav"):
         shutil.copy2(any_path, wav_path)
         return
+    if not _pydub_available:
+        raise ImportError("pydub is required for audio conversion. Please install it with: pip install pydub")
     if any_path.endswith(".sil") or any_path.endswith(".silk") or any_path.endswith(".slk"):
         return sil_to_wav(any_path, wav_path)
     # pydub 0.23.0+ 会将 parameters 追加到 ffmpeg 命令的输出文件 `-` 之后，
@@ -98,11 +98,11 @@ def any_to_sil(any_path, sil_path):
     """
     把任意格式转成sil文件
     """
-    if not _pydub_available:
-        raise ImportError("pydub is required for audio conversion. Please install it with: pip install pydub")
     if any_path.endswith(".sil") or any_path.endswith(".silk") or any_path.endswith(".slk"):
         shutil.copy2(any_path, sil_path)
         return 10000
+    if not _pydub_available:
+        raise ImportError("pydub is required for audio conversion. Please install it with: pip install pydub")
     audio = AudioSegment.from_file(any_path)
     rate = find_closest_sil_supports(audio.frame_rate)
     # Convert to PCM_s16
@@ -119,11 +119,11 @@ def any_to_amr(any_path, amr_path):
     """
     把任意格式转成amr文件
     """
-    if not _pydub_available:
-        raise ImportError("pydub is required for audio conversion. Please install it with: pip install pydub")
     if any_path.endswith(".amr"):
         shutil.copy2(any_path, amr_path)
         return
+    if not _pydub_available:
+        raise ImportError("pydub is required for audio conversion. Please install it with: pip install pydub")
     if any_path.endswith(".sil") or any_path.endswith(".silk") or any_path.endswith(".slk"):
         raise NotImplementedError("Not support file type: {}".format(any_path))
     audio = AudioSegment.from_file(any_path)
