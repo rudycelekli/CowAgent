@@ -1,5 +1,6 @@
 import os
 import shutil
+import tempfile
 import wave
 
 from common.log import logger
@@ -57,14 +58,12 @@ def any_to_mp3(any_path, mp3_path):
         shutil.copy2(any_path, mp3_path)
         return
     sil_wav_path = None
-    if any_path.endswith(".sil") or any_path.endswith(".silk") or any_path.endswith(".slk"):
-        # pysilk decodes silk into wav only, so the audio needs a wav file of
-        # its own: decoding onto any_path overwrote the caller's voice file and
-        # then left nothing at mp3_path to read.
-        sil_wav_path = os.path.splitext(any_path)[0] + ".silk.wav"
-        sil_to_wav(any_path, sil_wav_path)
-        any_path = sil_wav_path
     try:
+        if any_path.endswith((".sil", ".silk", ".slk")):
+            fd, sil_wav_path = tempfile.mkstemp(prefix="cow-silk-", suffix=".wav")
+            os.close(fd)
+            sil_to_wav(any_path, sil_wav_path)
+            any_path = sil_wav_path
         audio = AudioSegment.from_file(any_path)
         audio.export(mp3_path, format="mp3")
     finally:
