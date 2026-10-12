@@ -1368,8 +1368,6 @@ class ConversationStore:
             raise ValueError("run_id is required")
         if not self._runs_ready:
             return False
-        if status == "running":
-            _live_runs.add(run_id)
         now = int(time.time())
         extras_json = (
             json.dumps(extras, ensure_ascii=False) if extras else ""
@@ -1391,7 +1389,10 @@ class ConversationStore:
                             task_id, task_source, status, now, extras_json,
                         ),
                     )
-                    return cur.rowcount > 0
+                    inserted = cur.rowcount > 0
+                if inserted and status == "running":
+                    _live_runs.add(run_id)
+                return inserted
             finally:
                 conn.close()
 
