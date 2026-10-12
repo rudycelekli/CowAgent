@@ -298,15 +298,9 @@ class DoubaoBot(Bot):
             finish_reason = None
             stream_usage = None  # Provider-reported token usage (include_usage)
 
-            for line in response.iter_lines():
-                if not line:
-                    continue
+            from models.openai.openai_http_client import OpenAIHTTPClient
 
-                line = line.decode("utf-8")
-                if not line.startswith("data: "):
-                    continue
-
-                data_str = line[6:]  # Remove "data: " prefix
+            for data_str in OpenAIHTTPClient._iter_sse_events(response):
                 if data_str.strip() == "[DONE]":
                     break
 
