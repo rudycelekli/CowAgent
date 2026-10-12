@@ -106,7 +106,7 @@ def any_to_sil(any_path, sil_path):
     audio = AudioSegment.from_file(any_path)
     rate = find_closest_sil_supports(audio.frame_rate)
     # Convert to PCM_s16
-    pcm_s16 = audio.set_sample_width(2)
+    pcm_s16 = audio.set_channels(1).set_sample_width(2)
     pcm_s16 = pcm_s16.set_frame_rate(rate)
     wav_data = pcm_s16.raw_data
     silk_data = pysilk.encode(wav_data, data_rate=rate, sample_rate=rate)
