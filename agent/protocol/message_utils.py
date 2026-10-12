@@ -152,7 +152,7 @@ def sanitize_claude_messages(messages: List[Dict]) -> int:
             break
         content = first.get("content", [])
         if isinstance(content, list) and _has_block_type(content, "tool_result") \
-                and not _has_block_type(content, "text"):
+                and all(isinstance(block, dict) and block.get("type") == "tool_result" for block in content):
             logger.warning("⚠️ Removing leading orphaned tool_result user message")
             messages.pop(0)
             removed += 1
