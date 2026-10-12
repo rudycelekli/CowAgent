@@ -90,10 +90,8 @@ def is_versioned(asset_path: str) -> bool:
 def asset_version(asset_path: str) -> str:
     """A stamp for one asset, derived from its last modification time.
 
-    Milliseconds rather than seconds so two edits within the same second still
-    produce different stamps, which matters while developing: an edit that did
-    not move the stamp would be served from cache and look like it had no
-    effect. An asset that cannot be stat'd gets no stamp instead of raising,
+    Preserve the filesystem's integer nanosecond precision so distinct edits
+    within a millisecond cannot share an immutable asset URL. An asset that cannot be stat'd gets no stamp instead of raising,
     so one stale reference cannot turn the whole console into a 500; the asset
     tests catch the missing file directly.
     """
@@ -101,7 +99,7 @@ def asset_version(asset_path: str) -> str:
     if not full_path.startswith(_STATIC_DIR + os.sep):
         return ''
     try:
-        return format(int(os.path.getmtime(full_path) * 1000), 'x')
+        return format(os.stat(full_path).st_mtime_ns, 'x')
     except OSError:
         return ''
 
