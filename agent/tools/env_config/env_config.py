@@ -95,20 +95,14 @@ class EnvConfig(BaseTool):
     
     def _read_env_file(self) -> Dict[str, str]:
         """Read all key-value pairs from .env file"""
-        env_vars = {}
-        if os.path.exists(self.env_path):
-            with open(self.env_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    # Skip empty lines and comments
-                    if not line or line.startswith('#'):
-                        continue
-                    # Parse KEY=VALUE
-                    match = re.match(r'^([^=]+)=(.*)$', line)
-                    if match:
-                        key, value = match.groups()
-                        env_vars[key.strip()] = value.strip()
-        return env_vars
+        from dotenv import dotenv_values
+
+        if not os.path.exists(self.env_path):
+            return {}
+        return {
+            key: value for key, value in dotenv_values(self.env_path, interpolate=False).items()
+            if value is not None
+        }
     
     def _restrict_to_owner(self) -> None:
         """Keep the credentials file readable by its owner only.
@@ -128,7 +122,13 @@ class EnvConfig(BaseTool):
             "# Auto-managed by env_config tool",
             "",
         ]
-        lines.extend(f"{key}={value}" for key, value in sorted(env_vars.items()))
+        for key, value in sorted(env_vars.items()):
+            if re.fullmatch(r"[^\s'\"\\]+", value):
+                lines.append(f"{key}={value}")
+                continue
+            escaped = (value.replace("\\", "\\\\").replace('"', '\\"')
+                       .replace("\n", "\\n").replace("\r", "\\r"))
+            lines.append(f'{key}="{escaped}"')
         write_text_atomic(self.env_path, "\n".join(lines) + "\n")
         self._restrict_to_owner()
     

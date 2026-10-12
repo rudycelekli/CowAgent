@@ -105,5 +105,5 @@ def test_ordinary_values_still_round_trip(tool):
 
     stored = tool._read_env_file()
     assert {k: v for k, v in stored.items() if k in cases} == {
-        k: v.rstrip() for k, v in cases.items()
+        k: v for k, v in cases.items()
     }
