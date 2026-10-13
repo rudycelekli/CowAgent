@@ -20,21 +20,70 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix:
-        python: ["3.11", "3.13"]
-        candidate: [scheduler-migration-commit]
+        python:
+        - '3.11'
+        - '3.13'
+        candidate:
+        - workspace-read-snapshot
+        - workspace-agent-fallback
+        - project-save-errors
+        - root-mutable-files
         include:
-          - candidate: scheduler-migration-commit
-            head: 051b6275e56c79e23f20842430aaf9784e1a2af9
-            base: 90e8c0a3e1c3e8bc0ba7d9281ca750a2225f9679
-            patch_sha256: c34437151cdfbcda094172f9287862d01ded9cb8f7a6c099c7f21c91102beac3
-            test_sha256: 0333a8333b27c0149f31bd6f4da046831f09a5d7372933617e5c1ac52b00e360
-            test: tests/test_scheduler_migration_commit.py
-            failures:
-              - test_failed_global_write_retains_reminder_for_a_fresh_store
-              - test_global_commit_precedes_retiring_every_legacy_source
-              - test_unrecoverable_global_store_is_never_replaced_by_import
-              - test_unreadable_legacy_source_remains_available_for_retry
-            healthy: [test_duplicate_global_id_keeps_its_existing_task]
+        - candidate: workspace-read-snapshot
+          head: 38d1a4b6e59ab28aa4213e00ef6488fbf3f2e38e
+          base: 90e8c0a3e1c3e8bc0ba7d9281ca750a2225f9679
+          patch_sha256: 31d9113984935f69ecb270bce7b690c4730477cc484ca57db1fb869227b3110e
+          test_sha256: 20f9d8496845245a8896d880fa2fe9126ad4248cad6cc41c65120265b22ab040
+          test: tests/test_workspace_read_snapshot.py
+          failures:
+          - test_read_metadata_belongs_to_the_returned_content
+          - test_http_editor_reports_conflict_after_atomic_replacement
+          healthy:
+          - test_unchanged_file_keeps_the_existing_editor_round_trip
+        - candidate: workspace-agent-fallback
+          head: 1d6edfdd7c8fa8e0c47e0d378c1c3e60d8166415
+          base: 90e8c0a3e1c3e8bc0ba7d9281ca750a2225f9679
+          patch_sha256: a038cc40793a66659921cb09c72d95ddbe9e84a19ed99451617cd7e5b232306d
+          test_sha256: 8e212bb13713c5955fa0336390ac030c84e95659ec3d593a18c64ef08628bb48
+          test: tests/test_workspace_agent_fallback.py
+          failures:
+          - test_project_editor_reads_and_saves_the_requested_agents_memory[agent]
+          - test_project_editor_reads_and_saves_the_requested_agents_memory[agent_id]
+          - test_system_file_resolver_uses_the_requested_agent
+          - test_absolute_system_path_under_the_requested_agent_remains_editable
+          healthy:
+          - test_project_copy_and_default_agent_controls
+        - candidate: project-save-errors
+          head: a4e5249876ad1c7496ae696b26c424232a3e6301
+          base: 90e8c0a3e1c3e8bc0ba7d9281ca750a2225f9679
+          patch_sha256: 7e7f9bc86d284eadf635264d2684641cad7917dfbefecb1f8bdfbab086871fe5
+          test_sha256: d642d99fa415bbef786342b38d05f8d665052479a5be97c0d392ce2f29a596fe
+          test: tests/test_project_save_errors.py
+          failures:
+          - test_http_selection_reports_disk_failure_and_keeps_previous_binding
+          - test_failed_mutations_raise_without_leaving_partial_staging_files[select]
+          - test_failed_mutations_raise_without_leaving_partial_staging_files[clear]
+          - test_failed_mutations_raise_without_leaving_partial_staging_files[rename]
+          - test_failed_mutations_raise_without_leaving_partial_staging_files[order]
+          - test_failed_mutations_raise_without_leaving_partial_staging_files[delete]
+          - test_session_preferences_failures_preserve_saved_overrides[set]
+          - test_session_preferences_failures_preserve_saved_overrides[clear]
+          - test_session_preferences_failures_preserve_saved_overrides[forget]
+          healthy:
+          - test_successful_selection_remains_persistent
+          - test_unchanged_session_preferences_keep_the_existing_api
+        - candidate: root-mutable-files
+          head: 4ffa2b1e096e54309d94c31abe3225264a26b4ad
+          base: 90e8c0a3e1c3e8bc0ba7d9281ca750a2225f9679
+          patch_sha256: a9d156769c5415afada89418c4fd9b8d48411e34ec3820bf38ab8a5297f26524
+          test_sha256: 5ef1e8aef258dc25e22f0a4f196dc38f206f1491e93e96deb1597114562ece82
+          test: tests/test_file_serving_refresh.py
+          failures:
+          - test_mutable_file_requires_revalidation
+          - test_repeated_url_reads_the_updated_output
+          healthy:
+          - test_disallowed_path_is_still_refused
+          - test_missing_file_is_still_refused
 
     steps:
       - uses: actions/checkout@v4
