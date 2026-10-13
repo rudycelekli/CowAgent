@@ -1,0 +1,172 @@
+name: CowAgent net-new exact-source verification
+
+on:
+  push:
+    branches: [verify/cow-net-new-20261013]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  native:
+    name: native (${{ matrix.candidate }}, ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        python: ["3.11", "3.13"]
+        candidate: [scheduler-migration-commit]
+        include:
+          - candidate: scheduler-migration-commit
+            head: 051b6275e56c79e23f20842430aaf9784e1a2af9
+            base: 90e8c0a3e1c3e8bc0ba7d9281ca750a2225f9679
+            patch_sha256: c34437151cdfbcda094172f9287862d01ded9cb8f7a6c099c7f21c91102beac3
+            test_sha256: 0333a8333b27c0149f31bd6f4da046831f09a5d7372933617e5c1ac52b00e360
+            test: tests/test_scheduler_migration_commit.py
+            failures:
+              - test_failed_global_write_retains_reminder_for_a_fresh_store
+              - test_global_commit_precedes_retiring_every_legacy_source
+              - test_unrecoverable_global_store_is_never_replaced_by_import
+              - test_unreadable_legacy_source_remains_available_for_retry
+            healthy: [test_duplicate_global_id_keeps_its_existing_task]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.head }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the official lint dependency
+        run: python -m pip install ruff
+
+      - name: Verify the exact source and official changed-file F gate
+        env:
+          CANDIDATE_HEAD: ${{ matrix.head }}
+          CANDIDATE_BASE: ${{ matrix.base }}
+          EXPECTED_PATCH_SHA: ${{ matrix.patch_sha256 }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_HEAD"
+          git diff --exit-code
+          git diff --name-only "$CANDIDATE_BASE" HEAD -- '*.py' > "$RUNNER_TEMP/changed-python.txt"
+          mapfile -t files < "$RUNNER_TEMP/changed-python.txt"
+          ruff check "${files[@]}" --select F --ignore F403,F405
+          git diff --binary "$CANDIDATE_BASE" HEAD | sha256sum > "$RUNNER_TEMP/source.patch.sha256"
+          test "$(cut -d ' ' -f1 "$RUNNER_TEMP/source.patch.sha256")" = "$EXPECTED_PATCH_SHA"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install the official native test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+          python -m pip install -r requirements.txt
+
+      - name: Run the full official backend test suite
+        env:
+          CANDIDATE_HEAD: ${{ matrix.head }}
+        run: |
+          set +e
+          python -m pytest tests/ -q --junitxml="$RUNNER_TEMP/full.xml" | tee "$RUNNER_TEMP/full.log"
+          native_statuses=("${PIPESTATUS[@]}")
+          set -e
+          test "${native_statuses[1]}" = 0
+          export NATIVE_PYTEST_EXIT="${native_statuses[0]}"
+          python - <<'PY'
+          """Validate native pytest results independently of the surrounding CI job."""
+          
+          import json
+          import sys
+          import xml.etree.ElementTree as ET
+          
+          
+          def verify(path, producer_exit, actual_head, expected_head):
+              if producer_exit != 0:
+                  raise ValueError(f"native pytest exited {producer_exit}")
+              if actual_head != expected_head:
+                  raise ValueError("native tests ran against the wrong source head")
+              cases = list(ET.parse(path).iter("testcase"))
+              if not cases:
+                  raise ValueError("native pytest produced no test cases")
+              result = {
+                  "tests": len(cases),
+                  "failures": sum(c.find("failure") is not None for c in cases),
+                  "errors": sum(c.find("error") is not None for c in cases),
+                  "skipped": sum(c.find("skipped") is not None for c in cases),
+              }
+              if result["failures"] or result["errors"] or result["skipped"] == result["tests"]:
+                  raise ValueError(f"native pytest did not pass: {result}")
+              return result
+          
+          
+          import os, pathlib, subprocess
+          result = verify(
+              pathlib.Path(os.environ["RUNNER_TEMP"]) / "full.xml",
+              int(os.environ["NATIVE_PYTEST_EXIT"]),
+              subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              os.environ["CANDIDATE_HEAD"],
+          )
+          pathlib.Path(os.environ["RUNNER_TEMP"], "native-result.json").write_text(json.dumps(result))
+          print(json.dumps(result))
+          PY
+          git diff --exit-code
+
+      - name: Run the frozen intervention against the exact base
+        env:
+          CANDIDATE_HEAD: ${{ matrix.head }}
+          CANDIDATE_BASE: ${{ matrix.base }}
+          FROZEN_TEST: ${{ matrix.test }}
+          EXPECTED_TEST_SHA: ${{ matrix.test_sha256 }}
+          EXPECTED_FAILURES: ${{ toJson(matrix.failures) }}
+          EXPECTED_HEALTHY: ${{ toJson(matrix.healthy) }}
+        run: |
+          git show "$CANDIDATE_HEAD:$FROZEN_TEST" > "$RUNNER_TEMP/frozen.py"
+          sha256sum "$RUNNER_TEMP/frozen.py" > "$RUNNER_TEMP/frozen.sha256"
+          test "$(cut -d ' ' -f1 "$RUNNER_TEMP/frozen.sha256")" = "$EXPECTED_TEST_SHA"
+          git checkout --detach "$CANDIDATE_BASE"
+          cp "$RUNNER_TEMP/frozen.py" "$FROZEN_TEST"
+          set +e
+          python -m pytest "$FROZEN_TEST" -q --junitxml="$RUNNER_TEMP/before.xml" > "$RUNNER_TEMP/before.log" 2>&1
+          baseline_exit=$?
+          set -e
+          cat "$RUNNER_TEMP/before.log"
+          test "$baseline_exit" = 1
+          python - <<'PY'
+          import json, os, pathlib, xml.etree.ElementTree as ET
+          cases = list(ET.parse(pathlib.Path(os.environ["RUNNER_TEMP"]) / "before.xml").iter("testcase"))
+          failures = {c.attrib["name"] for c in cases if c.find("failure") is not None}
+          healthy = {c.attrib["name"] for c in cases if c.find("failure") is None}
+          assert not any(c.find("error") is not None or c.find("skipped") is not None for c in cases)
+          assert failures == set(json.loads(os.environ["EXPECTED_FAILURES"])), failures
+          assert healthy == set(json.loads(os.environ["EXPECTED_HEALTHY"])), healthy
+          print(json.dumps({"failures": sorted(failures), "healthy": sorted(healthy)}))
+          PY
+          git diff --exit-code
+
+      - name: Preserve native evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cow-net-new-${{ matrix.candidate }}-${{ matrix.python }}
+          path: |
+            ${{ runner.temp }}/native-result.json
+            ${{ runner.temp }}/full.xml
+            ${{ runner.temp }}/full.log
+            ${{ runner.temp }}/before.xml
+            ${{ runner.temp }}/before.log
+            ${{ runner.temp }}/frozen.sha256
+            ${{ runner.temp }}/source.patch.sha256
+            ${{ runner.temp }}/changed-python.txt
