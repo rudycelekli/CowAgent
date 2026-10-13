@@ -24,114 +24,38 @@ jobs:
         - '3.11'
         - '3.13'
         candidate:
-        - workspace-read-snapshot
-        - workspace-agent-fallback
-        - project-save-errors
-        - weixin-cdn-error-close
-        - openai-default-session-lock
-        - special-file-targets
-        - root-knowledge-publication
+        - skill-replacement-rollback
+        - skill-config-save-errors
         include:
-        - candidate: workspace-read-snapshot
-          head: 33767891dfb8eb1397ef4f0fd9a80152058546df
+        - candidate: skill-replacement-rollback
+          head: 254868efd4877ea5409e6a0b17b70ec495444718
           base: 90e8c0a3e1c3e8bc0ba7d9281ca750a2225f9679
-          patch_sha256: 31d9113984935f69ecb270bce7b690c4730477cc484ca57db1fb869227b3110e
-          test_sha256: 20f9d8496845245a8896d880fa2fe9126ad4248cad6cc41c65120265b22ab040
-          test: tests/test_workspace_read_snapshot.py
+          patch_sha256: 64ec2441cd8b04468a1963302f24516a8273a0976e7ef0ca463243cc5078d463
+          test_sha256: 5807ac9e9da414c7a7dca58412755678a9ddea6bc4b02e18da5c8fe24cf3dfef
+          test: tests/test_skill_replacement_rollback.py
           failures:
-          - test_read_metadata_belongs_to_the_returned_content
-          - test_http_editor_reports_conflict_after_atomic_replacement
+          - test_copy_failure_preserves_the_existing_installed_package
+          - test_url_promotion_failure_restores_the_previous_skill
+          - test_cli_copy_failure_keeps_the_previous_registered_skill[local]
+          - test_cli_copy_failure_keeps_the_previous_registered_skill[staged]
           healthy:
-          - test_unchanged_file_keeps_the_existing_editor_round_trip
-        - candidate: workspace-agent-fallback
-          head: 60161b7e7585993b290e44bac8763dc362ec0dbd
-          base: 90e8c0a3e1c3e8bc0ba7d9281ca750a2225f9679
-          patch_sha256: a038cc40793a66659921cb09c72d95ddbe9e84a19ed99451617cd7e5b232306d
-          test_sha256: 8e212bb13713c5955fa0336390ac030c84e95659ec3d593a18c64ef08628bb48
-          test: tests/test_workspace_agent_fallback.py
+          - test_successful_update_replaces_the_skill_and_reloads_metadata[url]
+          - test_successful_update_replaces_the_skill_and_reloads_metadata[package]
+        - candidate: skill-config-save-errors
+          head: a7f4d8f55f4742181db1a080612411aea6da7e1d
+          base: 61499724b195a4c3b1bac79a11957879d32c0351
+          patch_sha256: 0eb7cce1b46a6f519dff0e52fcc4b6b26a1248af05f330de16ee1b8d63b43c80
+          test_sha256: a75aa39ab6cf36c3ec6875ea059ef784743a877702b608393e557be764c62a33
+          test: tests/test_skill_config_save_errors.py
           failures:
-          - test_project_editor_reads_and_saves_the_requested_agents_memory[agent]
-          - test_project_editor_reads_and_saves_the_requested_agents_memory[agent_id]
-          - test_system_file_resolver_uses_the_requested_agent
-          - test_absolute_system_path_under_the_requested_agent_remains_editable
+          - test_console_reports_failed_skill_toggle_without_changing_saved_choice[open]
+          - test_console_reports_failed_skill_toggle_without_changing_saved_choice[close]
+          - test_failed_explicit_toggle_preserves_exception_and_memory_state
+          - test_explicit_skill_metadata_does_not_acknowledge_a_failed_save[display_name]
+          - test_explicit_skill_metadata_does_not_acknowledge_a_failed_save[category]
           healthy:
-          - test_project_copy_and_default_agent_controls
-        - candidate: project-save-errors
-          head: 6029a745ca91a9118ffbd1d751dc130d89d5a2d8
-          base: 90e8c0a3e1c3e8bc0ba7d9281ca750a2225f9679
-          patch_sha256: 7e7f9bc86d284eadf635264d2684641cad7917dfbefecb1f8bdfbab086871fe5
-          test_sha256: d642d99fa415bbef786342b38d05f8d665052479a5be97c0d392ce2f29a596fe
-          test: tests/test_project_save_errors.py
-          failures:
-          - test_http_selection_reports_disk_failure_and_keeps_previous_binding
-          - test_failed_mutations_raise_without_leaving_partial_staging_files[select]
-          - test_failed_mutations_raise_without_leaving_partial_staging_files[clear]
-          - test_failed_mutations_raise_without_leaving_partial_staging_files[rename]
-          - test_failed_mutations_raise_without_leaving_partial_staging_files[order]
-          - test_failed_mutations_raise_without_leaving_partial_staging_files[delete]
-          - test_session_preferences_failures_preserve_saved_overrides[set]
-          - test_session_preferences_failures_preserve_saved_overrides[clear]
-          - test_session_preferences_failures_preserve_saved_overrides[forget]
-          healthy:
-          - test_successful_selection_remains_persistent
-          - test_unchanged_session_preferences_keep_the_existing_api
-        - candidate: weixin-cdn-error-close
-          head: 507954c6bed12f37eb3405f6f5f2190e7f8223d4
-          base: 90e8c0a3e1c3e8bc0ba7d9281ca750a2225f9679
-          patch_sha256: b8455c11a6d0fb6466a6d00ef3ad316707f0a040071b2b100c09ecde0ef39cbe
-          test_sha256: 4c5e58ced691e9a67b8e48ad1dc93439b24c404276f02505dbac41d486b128f6
-          test: tests/test_weixin_cdn_error_close.py
-          failures:
-          - test_rejected_http_status_releases_the_stream_before_returning_error[404]
-          - test_rejected_http_status_releases_the_stream_before_returning_error[500]
-          - test_local_http_error_closes_the_native_stream_and_returns_the_pool_slot
-          healthy:
-          - test_successful_download_still_decrypts_and_releases_the_connection
-          - test_oversized_body_remains_bounded_and_releases_the_connection
-          - test_cleanup_failure_preserves_the_original_http_error
-        - candidate: openai-default-session-lock
-          head: 815926a1361f55bd3ae6cdbfced72053b62f9d07
-          base: 90e8c0a3e1c3e8bc0ba7d9281ca750a2225f9679
-          patch_sha256: 9ed62ff0737b0d098809b1a189ae1f102d608c77af1ce50ab75e6391445f992d
-          test_sha256: 4bb1bb35613aaa48dc861d0647bb579d29c40fcac10bf35e40af5ea63615cdbf
-          test: tests/test_openai_default_session_lock.py
-          failures:
-          - test_omitted_and_explicit_default_agent_cannot_overlap_one_conversation[False]
-          - test_omitted_and_explicit_default_agent_cannot_overlap_one_conversation[True]
-          healthy:
-          - test_different_agents_keep_independent_conversation_execution
-        - candidate: special-file-targets
-          head: a9d0602fd6a4568840b49c8d6dc2cb91a790a368
-          base: 90e8c0a3e1c3e8bc0ba7d9281ca750a2225f9679
-          patch_sha256: 9a1906bfaf21076873ee9e3e0c4d811bec97cbce8146d8a2421039f008026403
-          test_sha256: ec5e4cc6e36e9d5138d35608251860c4bcfe73fd41446597a27ac5913ed899b8
-          test: tests/test_special_file_targets.py
-          failures:
-          - test_reading_tools_refuse_a_fifo_without_a_writer[False-edit]
-          - test_reading_tools_refuse_a_fifo_without_a_writer[False-memory_get]
-          - test_reading_tools_refuse_a_fifo_without_a_writer[True-edit]
-          - test_reading_tools_refuse_a_fifo_without_a_writer[True-memory_get]
-          - test_write_preserves_existing_fifo_instead_of_replacing_it[False]
-          - test_write_preserves_existing_fifo_instead_of_replacing_it[True]
-          - test_atomic_writer_refuses_special_targets_before_staging
-          healthy:
-          - test_regular_symlink_targets_and_new_files_keep_the_existing_contract
-        - candidate: root-knowledge-publication
-          head: 24d1ac30301a3dbbec487f027abd261bbbb835e9
-          base: 90e8c0a3e1c3e8bc0ba7d9281ca750a2225f9679
-          patch_sha256: f3fb72f0a55d739ce4e4db181e9f9f47af1bc8bce712299ba52a948209a43fcd
-          test_sha256: e70f3e6fb886db7a2d36ee737af5ee0461be680a3fe9a22c60930801ab694bff
-          test: tests/test_knowledge_publication_failure.py
-          failures:
-          - test_failed_overwrite_retains_document_and_index
-          - test_failed_import_retains_document_and_index
-          - test_failed_index_rebuild_retains_user_summaries
-          - test_console_action_failure_keeps_saved_document[create_document]
-          - test_console_action_failure_keeps_saved_document[import_documents]
-          healthy:
-          - test_successful_publication_replaces_all_bytes_and_preserves_summary[overwrite]
-          - test_successful_publication_replaces_all_bytes_and_preserves_summary[import]
-          - test_skip_import_and_protected_overwrite_preserve_existing_bytes
+          - test_automatic_metadata_sync_remains_best_effort
+          - test_successful_explicit_choice_survives_a_fresh_manager
 
     steps:
       - uses: actions/checkout@v4
