@@ -1,0 +1,41 @@
+name: Fork-only Windows inline Python qualification
+'on':
+  push:
+    branches: [validation/cow-inline-python-20261021]
+permissions:
+  contents: read
+jobs:
+  qualify:
+    if: github.repository == 'rudycelekli/CowAgent'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Exercise actual current Windows Bash tool without providers
+        shell: python
+        run: |
+          import pathlib,subprocess,tempfile,os,json,sys,traceback
+          assert sys.platform=='win32'
+          base='c690a031947f78e1f9245fbe976ae7a14e892b7c'
+          assert subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()==base
+          changed=subprocess.check_output(['git','diff','--name-only',base,'HEAD'],text=True).splitlines()
+          assert changed==['.github/workflows/campaign-windows-inline-probe.yml']
+          with tempfile.TemporaryDirectory(prefix='cow-inline-probe-') as home:
+            os.environ.update(HOME=home,USERPROFILE=home,COW_DATA_DIR=home)
+            from agent.tools.bash.bash import Bash
+            cases=[('single',"print(42)"),('lf',"value=40\nprint(value+2)"),('crlf',"value=40\r\nprint(value+2)"),('block',"for value in [40]:\n    print(value+2)")]
+            results=[]
+            for label,code in cases:
+              command=f'"{sys.executable}" -c "{code}"'
+              result=Bash({'cwd':home}).execute({'command':command,'timeout':10})
+              results.append({'label':label,'status':result.status,'result':result.result})
+            print('::stop-commands::cow-inline-probe-end')
+            print(json.dumps({'base':base,'python':sys.version,'cases':results},indent=2))
+            print('::cow-inline-probe-end::')
+            first=results[0]
+            assert first['status']=='success' and first['result']['exit_code']==0 and first['result']['output'].strip()=='42', 'single-line control failed; do not infer multiline cause'
