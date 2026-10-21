@@ -17,8 +17,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install the source import dependency
-        run: python -m pip install requests==2.32.5
+      - name: Install lightweight source import dependencies
+        run: python -m pip install requests==2.32.5 regex PyYAML markdown-it-py json-repair numpy python-dotenv croniter chardet
       - name: Exercise actual current Windows Bash tool without providers
         shell: python
         run: |
