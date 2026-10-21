@@ -22,6 +22,7 @@ jobs:
         run: |
           import pathlib,subprocess,tempfile,os,json,sys,traceback
           assert sys.platform=='win32'
+          sys.path.insert(0, str(pathlib.Path.cwd()))
           base='c690a031947f78e1f9245fbe976ae7a14e892b7c'
           assert subprocess.check_output(['git','merge-base',base,'HEAD'],text=True).strip()==base
           changed=subprocess.check_output(['git','diff','--name-only',base,'HEAD'],text=True).splitlines()
