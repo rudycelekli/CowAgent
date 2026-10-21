@@ -1,0 +1,55 @@
+name: CowAgent TTS registry isolation proof
+on:
+  push:
+    branches: [validation/cow-tts-registry-20261021]
+permissions:
+  contents: read
+jobs:
+  causal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: rudycelekli/CowAgent
+          ref: fa242cb34f6e8e9c490cc29e0ef9c254f1e14416
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Exact identity
+        run: |
+          test "$(git rev-parse HEAD)" = fa242cb34f6e8e9c490cc29e0ef9c254f1e14416
+          git rev-parse HEAD HEAD^{tree}
+          sha256sum requirements.txt tests/test_manual_tts_message_binding.py tests/test_mcp_tool_prefix.py
+          python --version
+          echo "ImageOS=$ImageOS ImageVersion=$ImageVersion"
+      - name: Native dependencies
+        run: python -m pip install pytest && python -m pip install -r requirements.txt
+      - name: Before exact ordered files
+        shell: bash
+        run: |
+          set +e
+          python -m pytest tests/test_manual_tts_message_binding.py tests/test_mcp_tool_prefix.py -q > /tmp/before.log 2>&1
+          result=$?
+          cat /tmp/before.log
+          test "$result" -eq 1 || exit 1
+          grep -F 'FAILED tests/test_mcp_tool_prefix.py::test_omitted_or_empty_prefix_preserves_existing_names[options0]' /tmp/before.log
+          grep -F 'FAILED tests/test_mcp_tool_prefix.py::test_omitted_or_empty_prefix_preserves_existing_names[options1]' /tmp/before.log
+      - name: Apply only test-owned registry teardown
+        run: |
+          python -c 'from pathlib import Path; p=Path('"'"'tests/test_manual_tts_message_binding.py'"'"'); a=p.read_text(); assert a.count('"'"'        worker.join(timeout=5)\n'"'"')==1; p.write_text(a.replace('"'"'        worker.join(timeout=5)\n'"'"','"'"'        worker.join(timeout=5)\n        set_agent_registry(None)\n'"'"'))'
+          sha256sum tests/test_manual_tts_message_binding.py
+          git diff --check
+          git diff -- tests/test_manual_tts_message_binding.py
+      - name: After exact ordered files
+        run: python -m pytest tests/test_manual_tts_message_binding.py tests/test_mcp_tool_prefix.py -q
+      - name: Required full backend Python3.11
+        run: python -m pytest tests/ -q
+      - name: Final source guard
+        if: always()
+        run: |
+          git diff --name-only
+          test "$(git diff --name-only)" = tests/test_manual_tts_message_binding.py
+          echo '5dfa33eaa855d0a5a2b1efe4413a22575c5f295b93c1862a4249dfcedc13edc7  tests/test_manual_tts_message_binding.py' | sha256sum -c -
+          git diff --check
