@@ -1,4 +1,4 @@
-name: Fork-only Windows inline Python qualification
+name: Fork-only Windows inline Python exact-head regression
 'on':
   push:
     branches: [validation/cow-inline-python-20261021]
@@ -12,34 +12,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: cec7433eea97477795923fa7c57e47ee63111bad
           persist-credentials: false
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install lightweight source import dependencies
-        run: python -m pip install requests==2.32.5 regex PyYAML markdown-it-py json-repair numpy python-dotenv croniter chardet
-      - name: Exercise actual current Windows Bash tool without providers
+      - name: Install lightweight source import and test dependencies
+        run: python -m pip install requests==2.32.5 regex PyYAML markdown-it-py json-repair numpy python-dotenv croniter chardet pytest
+      - name: Record exact product and runtime
         shell: python
         run: |
-          import pathlib,subprocess,tempfile,os,json,sys,traceback
-          assert sys.platform=='win32'
-          sys.path.insert(0, str(pathlib.Path.cwd()))
+          import subprocess,sys,json
+          head='cec7433eea97477795923fa7c57e47ee63111bad'
           base='c690a031947f78e1f9245fbe976ae7a14e892b7c'
-          assert subprocess.check_output(['git','merge-base',base,'HEAD'],text=True).strip()==base
-          changed=subprocess.check_output(['git','diff','--name-only',base,'HEAD'],text=True).splitlines()
-          assert changed==['.github/workflows/campaign-windows-inline-probe.yml']
-          with tempfile.TemporaryDirectory(prefix='cow-inline-probe-', ignore_cleanup_errors=True) as home:
-            os.environ.update(HOME=home,USERPROFILE=home,COW_DATA_DIR=home)
-            from agent.tools.bash.bash import Bash
-            cases=[('single',"print(42)"),('lf',"value=40\nprint(value+2)"),('crlf',"value=40\r\nprint(value+2)"),('block',"for value in [40]:\n    print(value+2)")]
-            results=[]
-            for label,code in cases:
-              command=f'"{sys.executable}" -c "{code}"'
-              result=Bash({'cwd':home}).execute({'command':command,'timeout':10})
-              results.append({'label':label,'status':result.status,'result':result.result})
-            print('::stop-commands::cow-inline-probe-end')
-            print(json.dumps({'base':base,'python':sys.version,'cases':results},indent=2))
-            print('::cow-inline-probe-end::')
-            first=results[0]
-            assert first['status']=='success' and first['result']['exit_code']==0 and first['result']['output'].strip()=='42', 'single-line control failed; do not infer multiline cause'
+          assert sys.platform=='win32'
+          assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==head
+          assert subprocess.check_output(['git','merge-base',base,head],text=True).strip()==base
+          paths=subprocess.check_output(['git','diff','--name-only',base,head],text=True).splitlines()
+          assert paths==['agent/tools/bash/bash.py','tests/test_bash_multiline_python.py'], paths
+          assert not subprocess.check_output(['git','status','--porcelain'],text=True).strip()
+          print(json.dumps({'product':head,'base':base,'python':sys.version,'paths':paths}))
+          subprocess.run([sys.executable,'-m','pip','freeze'],check=True)
+      - name: Run real Windows Bash regressions without providers
+        run: python -m pytest tests/test_bash_multiline_python.py tests/test_bash_streaming.py -q --junitxml=windows-bash-result.xml
+      - name: Verify native coverage and retain ordinary-log evidence
+        if: always()
+        shell: python
+        run: |
+          import pathlib,xml.etree.ElementTree as ET,subprocess
+          report=pathlib.Path('windows-bash-result.xml')
+          assert report.exists(), 'test collection/execution did not produce evidence'
+          print('::stop-commands::cow-windows-result-end')
+          print(report.read_text(encoding='utf-8'))
+          print('::cow-windows-result-end::')
+          cases=ET.parse(report).getroot().findall('.//testcase')
+          focus=[c for c in cases if 'test_bash_multiline_python' in c.get('classname','')]
+          assert len(focus)==21, len(focus)
+          assert all(not list(c) for c in focus), 'new native cases must pass without skips'
+          failures=[c for c in cases if c.find('failure') is not None or c.find('error') is not None]
+          assert not failures
+          assert not subprocess.check_output(['git','diff','--name-only'],text=True).strip()
