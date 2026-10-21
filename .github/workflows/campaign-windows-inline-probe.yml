@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: cec7433eea97477795923fa7c57e47ee63111bad
+          ref: 8e7070c60e8859bb063a173fb28738d21908b222
           persist-credentials: false
           fetch-depth: 0
       - uses: actions/setup-python@v5
@@ -24,7 +24,7 @@ jobs:
         shell: python
         run: |
           import subprocess,sys,json
-          head='cec7433eea97477795923fa7c57e47ee63111bad'
+          head='8e7070c60e8859bb063a173fb28738d21908b222'
           base='c690a031947f78e1f9245fbe976ae7a14e892b7c'
           assert sys.platform=='win32'
           assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==head
